@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json, math, os, time
+import argparse, json, math, os, signal, sys, time
 
 import torch
 import torch.distributed as dist
@@ -16,6 +16,17 @@ from qwen_image_l2p import QwenImageL2P, PIXEL_PATCH  # noqa: E402
 from dataset import OverfitDataset  # noqa: E402
 from optimizers import build_optimizer  # noqa: E402
 import sample_eval  # noqa: E402
+import ckpt as ckptlib  # noqa: E402
+
+# Set by the SIGTERM handler. RunPod spot eviction sends SIGTERM ~5s before SIGKILL — too
+# short to write a checkpoint, so we just flip this flag, stop cleanly at the next step
+# boundary, and rely on the periodic checkpoint already on the network volume.
+STOP = False
+
+def _on_sigterm(signum, frame):
+    global STOP
+    STOP = True
+    print(f"[{time.strftime('%H:%M:%S')}] SIGTERM received — will stop at next step boundary", flush=True)
 
 try:
     import wandb
@@ -107,6 +118,34 @@ def build_model(args, cfg, device):
     pe.pos_freqs, pe.neg_freqs = fresh.pos_freqs, fresh.neg_freqs
     log(f"loaded pixel-init: {args.pixel_init} | fsdp={not args.no_fsdp}")
     return model
+
+
+def enable_fa3():
+    """Route the Qwen DiT's joint attention through FlashAttention-3 (Hopper).
+
+    Reuses the proven loader + monkeypatch from the dataset pipeline (dataset/fa3_loader.py,
+    batch_infer._install_fa3_dispatch). FA3's flash_attn_func is a differentiable
+    autograd.Function, so this works for TRAINING (forward + backward), under FSDP2 and
+    non-reentrant gradient checkpointing. The fast path only fires with no attention mask
+    (our case: batch=1, prompt_embeds_mask=None) and bf16/fp16 q,k,v; anything else falls
+    back to the original SDPA dispatch, so it can never silently corrupt a masked step.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dataset"))
+    from fa3_loader import load_fa3
+    import diffusers.models.transformers.transformer_qwenimage as tq
+    fa3 = load_fa3()
+    orig = tq.dispatch_attention_fn
+
+    def fa3_dispatch(query, key, value, attn_mask=None, dropout_p=0.0,
+                     is_causal=False, backend=None, parallel_config=None, **kw):
+        if attn_mask is None and not is_causal and query.dtype in (torch.bfloat16, torch.float16):
+            o = fa3.flash_attn_func(query.contiguous(), key.contiguous(), value.contiguous())
+            return o[0] if isinstance(o, tuple) else o
+        return orig(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
+                    is_causal=is_causal, backend=backend, parallel_config=parallel_config, **kw)
+
+    tq.dispatch_attention_fn = fa3_dispatch
+    log("FA3 enabled on Qwen DiT joint attention (flash_attn_func, no-mask fast path)")
 
 
 class CpuEMA:
@@ -211,8 +250,21 @@ def main():
                     choices=["adamw", "adamw8bit", "adamwfp8", "muon", "dion_muon", "shampoo"])
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--attention_backend", default=None)
+    ap.add_argument("--fa3", action="store_true",
+                    help="route Qwen DiT joint attention through FlashAttention-3 (Hopper); fastest")
     ap.add_argument("--max_grad_norm", type=float, default=1.0)
     ap.add_argument("--init_step", type=int, default=0, help="starting step counter (for resume continuity)")
+    # spot-resilient resume / checkpointing (see ckpt.py)
+    ap.add_argument("--max_steps", type=int, default=0,
+                    help="total target steps (overrides init_step+steps). Set this for spot resume.")
+    ap.add_argument("--resume", default="auto", choices=["auto", "none"],
+                    help="auto: resume from latest checkpoint in --ckpt_dir if present")
+    ap.add_argument("--ckpt_dir", default=None, help="resumable-checkpoint dir (default: <output_dir>/ckpt)")
+    ap.add_argument("--ckpt_every", type=int, default=200, help="write a resumable checkpoint every N steps")
+    ap.add_argument("--keep_last", type=int, default=3, help="how many resumable checkpoints to retain")
+    ap.add_argument("--ckpt_optim", default="full", choices=["full", "none"],
+                    help="full: save optimizer state (resumes momentum); none: smaller/faster, loses momentum")
+    ap.add_argument("--hf_backup_repo", default=None, help="also push each checkpoint to this HF model repo")
     ap.add_argument("--ema", action="store_true", help="track EMA of trainable weights (CPU); sample from EMA")
     ap.add_argument("--ema_decay", type=float, default=0.999)
     ap.add_argument("--ema_update_every", type=int, default=8)
@@ -235,6 +287,8 @@ def main():
     device = torch.device("cuda", local)
     torch.manual_seed(args.seed + rank)
     os.makedirs(args.output_dir, exist_ok=True)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    ckpt_dir = args.ckpt_dir or os.path.join(args.output_dir, "ckpt")
 
     use_wandb = bool(args.wandb_project) and WANDB and is_main()
     if use_wandb:
@@ -246,6 +300,8 @@ def main():
 
     model = build_model(args, cfg, device)
     apply_trainable_scope(model, args)
+    if args.fa3:
+        enable_fa3()
     if args.attention_backend:
         model.dit.set_attention_backend(args.attention_backend)
         log(f"attention backend: {args.attention_backend}")
@@ -255,12 +311,22 @@ def main():
         model = torch.compile(model, dynamic=True)
         log("torch.compile enabled (dynamic shapes)")
     opt = build_optimizer(model, args)
-    opt_total = max(1, args.steps // args.grad_accum)  # scheduler advances per optimizer step
+    total_steps = args.max_steps if args.max_steps else args.steps
+    opt_total = max(1, total_steps // args.grad_accum)  # scheduler advances per optimizer step
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: lr_lambda(s, args.warmup_steps, opt_total, args.lr_schedule))
     ema = CpuEMA(model, args.ema_decay, args.ema_update_every) if args.ema else None
     if ema:
         log(f"EMA on (decay {args.ema_decay}, every {args.ema_update_every} steps, CPU bf16 pinned)")
+
+    # ---- spot resume: pick up from the latest checkpoint on the (network) volume ----
+    resume_step = None
+    if args.resume == "auto":
+        latest = ckptlib.latest_ckpt(ckpt_dir)
+        if latest:
+            resume_step = ckptlib.load_resumable(latest, model, opt, sched, ema)
+        else:
+            log(f"resume=auto but no checkpoint in {ckpt_dir} — starting fresh from pixel_init")
 
     ds = OverfitDataset(args.data_dir, args.text_cache, repeat=args.dataset_repeat, limit=args.limit)
     sampler = torch.utils.data.DistributedSampler(ds, world, rank, shuffle=True, seed=args.seed) if world > 1 else None
@@ -309,13 +375,23 @@ def main():
         wandb.log(d, step=step)
         log(f"  eval@{step}: recon_psnr {psnr:.2f}" + (f" (ema {ema_psnr:.2f})" if ema_psnr else ""))
 
-    step = args.init_step
-    final_step = args.init_step + args.steps
+    step = resume_step if resume_step is not None else args.init_step
+    final_step = args.max_steps if args.max_steps else (args.init_step + args.steps)
+    init_step = step
+    save_optim = (args.ckpt_optim == "full")
+    log(f"training step {step} -> {final_step}"
+        + (f" (resumed)" if resume_step is not None else "")
+        + f" | ckpt every {args.ckpt_every} (optim={args.ckpt_optim}) -> {ckpt_dir}")
     t0 = time.time()
     opt.zero_grad(set_to_none=True)
-    do_eval(step)
+    if resume_step is None:
+        do_eval(step)
+    epoch = step  # vary DistributedSampler order across restarts/epochs
     done = False
     while not done:
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+        epoch += 1
         for data in dl:
             x0 = data["image"].unsqueeze(0).to(device, torch.float32)
             emb = data["prompt_embeds"].unsqueeze(0).to(device, torch.bfloat16)
@@ -343,7 +419,7 @@ def main():
                     ema.update()
 
             if step % args.log_every == 0:
-                dt = (time.time() - t0) / max(step - args.init_step, 1)
+                dt = (time.time() - t0) / max(step - init_step, 1)
                 mem = torch.cuda.max_memory_allocated() / 1e9
                 lval = loss.item() * args.grad_accum
                 gn = float(gnorm) if gnorm is not None else 0.0
@@ -360,15 +436,31 @@ def main():
                 do_eval(step)
             if args.save_every and step % args.save_every == 0:
                 save_ckpt(model, args.output_dir, step, ema)
+            if args.ckpt_every and step % args.ckpt_every == 0:
+                ckptlib.save_resumable(model, opt, sched, step, ema, ckpt_dir,
+                                       keep_last=args.keep_last, save_optim=save_optim,
+                                       hf_repo=args.hf_backup_repo)
+            if STOP:
+                log("stopping on SIGTERM — writing final resumable checkpoint")
+                ckptlib.save_resumable(model, opt, sched, step, ema, ckpt_dir,
+                                       keep_last=args.keep_last, save_optim=save_optim,
+                                       hf_repo=args.hf_backup_repo)
+                done = True
+                break
             if step >= final_step:
                 done = True
                 break
 
-    do_eval(step)
-    if args.save_every:
+    completed = step >= final_step
+    if completed:
+        # training reached the target: final eval + resumable ckpt + inference-weights export
+        do_eval(step)
+        ckptlib.save_resumable(model, opt, sched, step, ema, ckpt_dir,
+                               keep_last=args.keep_last, save_optim=save_optim,
+                               hf_repo=args.hf_backup_repo)
         save_ckpt(model, args.output_dir, step, ema)
 
-    if is_main():
+    if completed and is_main():
         import numpy as np
         L, G, P = hist["loss"], hist["grad_norm"], hist["psnr"]
         half = L[len(L) // 2:] if L else [0]
@@ -392,10 +484,13 @@ def main():
             f"psnrΔ {summary['psnr_delta']} maxgn {summary['max_grad_norm']:.2f}")
         if use_wandb:
             wandb.summary.update(summary)
-    log(f"done in {time.time()-t0:.0f}s")
+    log(f"done in {time.time()-t0:.0f}s" + ("" if completed else " (stopped early — will resume)"))
     if use_wandb:
         wandb.finish()
     dist.destroy_process_group()
+    # exit code tells the spot supervisor what to do: 0 = finished, 42 = evicted/early -> relaunch
+    if not completed:
+        sys.exit(42)
 
 def save_ckpt(model, out, step, ema=None):
     if hasattr(model, "_orig_mod"):

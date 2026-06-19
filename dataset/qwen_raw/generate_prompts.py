@@ -275,7 +275,7 @@ def expand_categories(llm, sp_factory, n_cat, existing):
             '"input" (the kind of seed subject it expects), and "seeds" (4-6 '
             "concrete, visually rich, varied example subjects). "
             "Output ONLY a JSON array of such objects.")
-    per_call = 25
+    per_call = 8          # small batches so the JSON array isn't truncated (was 25 -> ~7% yield)
     convs, call_supers = [], []
     for sup, cnt in _alloc_supers(n_cat).items():
         themes = SUPER_THEMES[sup]
@@ -290,7 +290,7 @@ def expand_categories(llm, sp_factory, n_cat, existing):
                     f"strong aesthetic potential. Spread them across these themes: "
                     f"{'; '.join(picks)}. JSON array of {want} objects only."}])
             call_supers.append(sup)
-    outs = llm.chat(convs, sp_factory(max_tokens=2048, temperature=1.1),
+    outs = llm.chat(convs, sp_factory(max_tokens=4096, temperature=1.05),
                     chat_template_kwargs={"enable_thinking": False}, use_tqdm=True)
     cats, seen = [], set(e.lower() for e in existing)
     for o, sup in zip(outs, call_supers):

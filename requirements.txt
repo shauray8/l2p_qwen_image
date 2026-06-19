@@ -1,0 +1,25 @@
+# Python deps for L2P training + data prep on a RunPod PyTorch pod.
+#
+# torch / torchvision are provided by the RunPod PyTorch base image and are intentionally
+# NOT listed here — reinstalling them risks a CUDA/ABI mismatch with the image.
+#
+# IMPORTANT: pin these to whatever versions ran the overfit successfully. The cleanest way
+# is to run `pip freeze > requirements.lock` on the box that trained the overfit and use
+# that. diffusers in particular must be new enough to ship QwenImageTransformer2DModel for
+# Qwen-Image-2512 (it references `modulate_index` and `dispatch_attention_fn`); too old a
+# release will not import. The floors below are a starting point, not a guarantee.
+
+diffusers>=0.36
+transformers>=4.57
+accelerate>=1.0
+safetensors>=0.4
+huggingface_hub>=0.35
+hf_transfer>=0.1.8          # required: HF_HUB_ENABLE_HF_TRANSFER=1 errors without it
+einops>=0.8
+numpy
+pillow
+
+# optional but enabled by the spot config / speed knobs:
+torchao>=0.14              # --optim adamw8bit / adamwfp8, --fp8_weights
+wandb                      # --wandb_project logging
+lpips                      # eval LPIPS metric (recon_metrics)

@@ -6,7 +6,8 @@ MODEL="${MODEL:-Qwen/Qwen-Image-2512}"
 DATA=data/overfit_500
 INIT=pretrain_weight/Qwen-Image-Pixel-Init/model.safetensors
 
-[ -f "$DATA/metadata.csv" ] || python dataset/curate_overfit.py
+# overfit set = first 500 of the cleaned dataset (curate_overfit.py was removed; prep + --limit)
+[ -f "$DATA/metadata.csv" ] || python train/prep_data.py --repo "${REPO:-shauray/l2p-clean}" --out "$DATA"
 
 [ -f "$INIT" ] || python l2p/convert_weights.py --model "$MODEL" --output "$INIT"
 
@@ -15,8 +16,8 @@ INIT=pretrain_weight/Qwen-Image-Pixel-Init/model.safetensors
 NPROC="${NPROC:-1}"
 EXTRA="${EXTRA:-}"
 LAUNCH=(--data_dir "$DATA" --pixel_init "$INIT" --output_dir runs/l2p_qwen_overfit
-        --steps 4000 --lr 5e-5 --weight_decay 0.01 --dataset_repeat 200
-        --trainable_scope shallow --grad_checkpointing
+        --steps 4000 --lr 5e-5 --weight_decay 0.01 --dataset_repeat 200 --limit 500
+        --trainable_scope shallow --grad_checkpointing --fa3
         --optim adamw --save_every 1000 --log_every 10)
 if [ "$NPROC" -eq 1 ]; then
   python train/train_overfit_fsdp2.py "${LAUNCH[@]}" $EXTRA
