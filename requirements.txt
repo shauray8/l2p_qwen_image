@@ -20,6 +20,6 @@ numpy
 pillow
 
 # optional but enabled by the spot config / speed knobs:
-torchao>=0.14              # --optim adamw8bit / adamwfp8, --fp8_weights
+torchao>=0.12.0              # --optim adamw8bit / adamwfp8, --fp8_weights
 wandb                      # --wandb_project logging
 lpips                      # eval LPIPS metric (recon_metrics)
