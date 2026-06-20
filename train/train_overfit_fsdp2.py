@@ -229,6 +229,44 @@ def collate_pad(batch):
             "file_name": [b["file_name"] for b in batch], "text": [b["text"] for b in batch]}
 
 
+class ResolutionBatchSampler:
+    """Batches of `batch_size` indices that share an image resolution, sharded across `world`
+    ranks. Lets us batch a variable-resolution dataset (FSDP allows different shapes per rank,
+    since grads reduce per-parameter). Bucket remainders (< batch_size) are dropped; each rank
+    gets an equal number of batches so collectives stay in lockstep."""
+    def __init__(self, sizes, batch_size, world, rank, seed=0):
+        from collections import defaultdict
+        self.bs, self.world, self.rank, self.seed = batch_size, max(1, world), rank, seed
+        self._byres = defaultdict(list)
+        for i, hw in enumerate(sizes):
+            self._byres[hw].append(i)
+        self.epoch = 0
+        self._build()
+
+    def _build(self):
+        import random
+        rng = random.Random(self.seed + self.epoch)
+        batches = []
+        for idxs in self._byres.values():
+            idxs = idxs[:]; rng.shuffle(idxs)
+            for j in range(0, len(idxs) - len(idxs) % self.bs, self.bs):
+                batches.append(idxs[j:j + self.bs])
+        rng.shuffle(batches)
+        batches = batches[: len(batches) - len(batches) % self.world]   # equal count per rank
+        self.batches = batches[self.rank :: self.world]
+        self.total = len(batches)
+
+    def set_epoch(self, e):
+        self.epoch = e
+        self._build()
+
+    def __iter__(self):
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", required=True)
@@ -345,9 +383,16 @@ def main():
             log(f"resume=auto but no checkpoint in {ckpt_dir} — starting fresh from pixel_init")
 
     ds = OverfitDataset(args.data_dir, args.text_cache, repeat=args.dataset_repeat, limit=args.limit)
-    sampler = torch.utils.data.DistributedSampler(ds, world, rank, shuffle=True, seed=args.seed) if world > 1 else None
-    dl = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=(sampler is None), sampler=sampler,
-                                     num_workers=2, collate_fn=collate_pad, drop_last=True)
+    if args.batch_size > 1:
+        # variable-resolution dataset -> batch only same-resolution images (aspect-ratio buckets)
+        sampler = ResolutionBatchSampler(ds.image_sizes(), args.batch_size, world, rank, seed=args.seed)
+        dl = torch.utils.data.DataLoader(ds, batch_sampler=sampler, num_workers=2, collate_fn=collate_pad)
+        log(f"resolution-bucketed batching: bs={args.batch_size} | {sampler.total} global batches/epoch "
+            f"| {len(ds)} imgs, ~{len(ds) - sampler.total * args.batch_size} dropped as bucket remainders")
+    else:
+        sampler = torch.utils.data.DistributedSampler(ds, world, rank, shuffle=True, seed=args.seed) if world > 1 else None
+        dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=(sampler is None), sampler=sampler,
+                                         num_workers=2, collate_fn=collate_pad, drop_last=True)
     eval_items = load_eval_items(ds, args.n_eval, device) if args.n_eval else []
     uncond = None
     if args.uncond_embed and args.cfg_scale != 1.0:

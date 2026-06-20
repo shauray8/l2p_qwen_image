@@ -24,3 +24,17 @@ class OverfitDataset(torch.utils.data.Dataset):
         stem = self.index[r["file_name"]]
         emb = torch.load(os.path.join(self.text_cache, f"{stem}.pt"), weights_only=True)["prompt_embeds"]
         return {"image": x, "prompt_embeds": emb, "file_name": r["file_name"], "text": r["text"]}
+
+    def image_sizes(self):
+        """(H, W) per effective index via cheap PIL header reads (no decode), cached.
+        Used by the resolution-bucketed batch sampler so >1 batches only stack same-size images."""
+        if getattr(self, "_sizes", None) is None:
+            per_row = []
+            for r in self.rows:
+                with Image.open(os.path.join(self.data_dir, r["file_name"])) as im:
+                    w, h = im.size
+                per_row.append((h, w))
+            n = len(self.rows)
+            self._sizes = [per_row[i % n] for i in range(len(self))]
+        return self._sizes
+
