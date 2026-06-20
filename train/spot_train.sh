@@ -28,13 +28,13 @@ cd "$(dirname "$0")/.."   # repo root
 : "${NPROC:=$(python -c 'import torch;print(torch.cuda.device_count())' 2>/dev/null || nvidia-smi --list-gpus 2>/dev/null | wc -l)}"
 case "${NPROC}" in ''|*[!0-9]*|0) NPROC=8;; esac
 : "${MAX_STEPS:=20000}"
-: "${CKPT_EVERY:=200}"                                   # ~minutes of work at risk; tune to step time
+: "${CKPT_EVERY:=50}"                                    # resumable ckpt cadence; small w/ adamw8bit so 50 is cheap
 : "${BATCH_SIZE:=auto}"                                  # per-GPU batch; "auto" scales to GPU mem (H200->8, H100->4)
 if [ "$BATCH_SIZE" = auto ]; then
   _memmib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9); _memmib=${_memmib:-0}
-  if   [ "$_memmib" -ge 130000 ]; then BATCH_SIZE=8      # ~141GB H200
-  elif [ "$_memmib" -ge 70000 ];  then BATCH_SIZE=4      # ~80GB  H100 / A100-80
-  elif [ "$_memmib" -ge 38000 ];  then BATCH_SIZE=2      # ~40GB
+  if   [ "$_memmib" -ge 130000 ]; then BATCH_SIZE=16      # ~141GB H200
+  elif [ "$_memmib" -ge 70000 ];  then BATCH_SIZE=8      # ~80GB  H100 / A100-80
+  elif [ "$_memmib" -ge 38000 ];  then BATCH_SIZE=4      # ~40GB
   else BATCH_SIZE=1; fi
   echo "[spot] auto batch_size=$BATCH_SIZE (per-GPU mem ${_memmib}MiB)"
 fi
