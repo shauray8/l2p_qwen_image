@@ -42,6 +42,8 @@ fi
 : "${N_EVAL:=4}"                                         # how many items to reconstruct each sample step
 : "${SAMPLE_STEPS:=28}"                                  # denoising steps per eval image
 : "${RESIZE_BASE:=0}"                                    # resize imgs to ~NxN area (AR kept); 0=native, 1024=uniform mem
+: "${FIRST_BLOCKS:=6}"                                   # trainable leading DiT blocks (overfit-validated: 6)
+: "${LAST_BLOCKS:=6}"                                    # trainable trailing DiT blocks (overfit-validated: 6)
 : "${KEEP_LAST:=3}"
 : "${CKPT_OPTIM:=full}"                                  # full=resume momentum; none=smaller/faster
 : "${HF_BACKUP_REPO:=}"                                  # optional off-volume durability, e.g. shauray/l2p-ckpts
@@ -104,7 +106,8 @@ while :; do
       --resume auto --max_steps "$MAX_STEPS" \
       --ckpt_every "$CKPT_EVERY" --keep_last "$KEEP_LAST" --ckpt_optim "$CKPT_OPTIM" \
       ${HF_BACKUP_REPO:+--hf_backup_repo "$HF_BACKUP_REPO"} \
-      --dataset_repeat 1 --trainable_scope shallow --optim adamw8bit --batch_size "$BATCH_SIZE" --resize_base "$RESIZE_BASE" \
+      --dataset_repeat 1 --trainable_scope shallow --first_blocks "$FIRST_BLOCKS" --last_blocks "$LAST_BLOCKS" \
+      --optim adamw8bit --batch_size "$BATCH_SIZE" --resize_base "$RESIZE_BASE" \
       --lr 5e-5 --weight_decay 0.01 --warmup_steps 50 --lr_schedule cosine \
       --fa3 \
       --grad_checkpointing --max_grad_norm 1.0 \
