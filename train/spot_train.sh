@@ -23,7 +23,10 @@ cd "$(dirname "$0")/.."   # repo root
 : "${DATA:=$VOL/data/l2p-clean}"
 : "${INIT:=$VOL/pretrain_weight/Qwen-Image-Pixel-Init/model.safetensors}"
 : "${RUN_DIR:=$VOL/runs/l2p_clean}"
-: "${NPROC:=8}"
+# GPUs the container actually sees (the spot ladder may hand us 8x / 4x / 2x). torch's
+# device_count is the source of truth for torchrun ranks; fall back to nvidia-smi, then 8.
+: "${NPROC:=$(python -c 'import torch;print(torch.cuda.device_count())' 2>/dev/null || nvidia-smi --list-gpus 2>/dev/null | wc -l)}"
+case "${NPROC}" in ''|*[!0-9]*|0) NPROC=8;; esac
 : "${MAX_STEPS:=20000}"
 : "${CKPT_EVERY:=50}"                                    # ~minutes of work at risk; tune to step time
 : "${KEEP_LAST:=3}"
@@ -42,6 +45,18 @@ mkdir -p "$RUN_DIR" "$(dirname "$INIT")"
 if ! python -c "import diffusers, transformers, safetensors, huggingface_hub, hf_transfer, torchao" 2>/dev/null; then
   echo "[spot] installing python deps from requirements.txt"
   python -m pip install -q -r requirements.txt || { echo "[spot] pip install failed"; exit 1; }
+fi
+
+# ---- optional: expose Jupyter Lab on :8888 (backgrounded; relaunches on every boot) ----
+# Our dockerArgs override replaces the image's default entrypoint, so RunPod's built-in
+# Jupyter never starts — we launch it ourselves. Survives evictions: each resume re-runs
+# this script and re-spawns it. Set a JUPYTER_TOKEN (else it's open to anyone with the URL).
+if [ "${START_JUPYTER:-1}" = "1" ] && ! pgrep -f "jupyter[ -]lab" >/dev/null 2>&1; then
+  python -c "import jupyterlab" 2>/dev/null || python -m pip install -q jupyterlab
+  echo "[spot] starting Jupyter Lab on :8888 (notebook-dir=$VOL)"
+  nohup jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser \
+    --ServerApp.token="${JUPYTER_TOKEN:-}" --ServerApp.allow_origin='*' \
+    --notebook-dir="$VOL" >"$VOL/jupyter.log" 2>&1 &
 fi
 
 # stop relaunching once the pod is being evicted/shut down
