@@ -207,9 +207,12 @@ def lr_lambda(step, warmup, total, schedule):
         return (1 - t) + 0.15 * t
     return 1.0
 
-def load_eval_items(ds, n, device):
+def load_eval_items(ds, n, device, seed=0):
+    import random
+    n = min(n, len(ds.rows))
+    idxs = random.Random(seed).sample(range(len(ds.rows)), n)   # random spread, fixed across resumes
     items = []
-    for i in range(min(n, len(ds.rows))):
+    for i in idxs:
         d = ds[i]
         img = ((d["image"].clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8).permute(1, 2, 0).numpy()
         items.append({"image_np": img, "prompt_embeds": d["prompt_embeds"], "file_name": d["file_name"]})
@@ -329,6 +332,8 @@ def main():
     ap.add_argument("--sample_steps", type=int, default=24)
     ap.add_argument("--n_eval", type=int, default=2, help="# fixed training items to recon-eval")
     ap.add_argument("--eval_seed", type=int, default=0)
+    ap.add_argument("--resize_base", type=int, default=0,
+                    help="resize images to ~base*base AREA (AR preserved, /16). 0=native. 1024 keeps memory uniform across buckets")
     ap.add_argument("--cfg_scale", type=float, default=1.0, help="classifier-free guidance scale at eval")
     ap.add_argument("--uncond_embed", default=None, help=".pt with unconditional prompt_embeds for CFG")
     # wandb
@@ -382,7 +387,8 @@ def main():
         else:
             log(f"resume=auto but no checkpoint in {ckpt_dir} — starting fresh from pixel_init")
 
-    ds = OverfitDataset(args.data_dir, args.text_cache, repeat=args.dataset_repeat, limit=args.limit)
+    ds = OverfitDataset(args.data_dir, args.text_cache, repeat=args.dataset_repeat, limit=args.limit,
+                        resize_base=args.resize_base)
     if args.batch_size > 1:
         # variable-resolution dataset -> batch only same-resolution images (aspect-ratio buckets)
         sampler = ResolutionBatchSampler(ds.image_sizes(), args.batch_size, world, rank, seed=args.seed)
@@ -393,7 +399,7 @@ def main():
         sampler = torch.utils.data.DistributedSampler(ds, world, rank, shuffle=True, seed=args.seed) if world > 1 else None
         dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=(sampler is None), sampler=sampler,
                                          num_workers=2, collate_fn=collate_pad, drop_last=True)
-    eval_items = load_eval_items(ds, args.n_eval, device) if args.n_eval else []
+    eval_items = load_eval_items(ds, args.n_eval, device, seed=args.eval_seed) if args.n_eval else []
     uncond = None
     if args.uncond_embed and args.cfg_scale != 1.0:
         uncond = torch.load(args.uncond_embed, weights_only=True)["prompt_embeds"]
