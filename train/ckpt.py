@@ -101,7 +101,7 @@ def _hf_backup(ckpt_path, ckpt_dir, repo, step):
     try:
         from huggingface_hub import HfApi
         api = HfApi()
-        api.create_repo(repo, repo_type="model", exist_ok=True, private=True)
+        api.create_repo(repo, repo_type="model", exist_ok=True, private=False)
         api.upload_file(path_or_fileobj=ckpt_path, path_in_repo=f"ckpt/{os.path.basename(ckpt_path)}",
                         repo_id=repo, repo_type="model", commit_message=f"resumable ckpt step {step}")
         lt = os.path.join(ckpt_dir, "LATEST")

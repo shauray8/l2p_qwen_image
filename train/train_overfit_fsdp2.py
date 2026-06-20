@@ -215,6 +215,20 @@ def load_eval_items(ds, n, device):
         items.append({"image_np": img, "prompt_embeds": d["prompt_embeds"], "file_name": d["file_name"]})
     return items
 
+def collate_pad(batch):
+    """Stack images (must share H,W) and right-pad prompt embeds to the batch max + build a mask.
+    batch_size==1 just adds the batch dim; the loop then passes mask=None so FA3 stays on."""
+    imgs = torch.stack([b["image"] for b in batch])                        # [B,C,H,W]; needs equal H,W
+    Tmax = max(b["prompt_embeds"].shape[0] for b in batch)
+    emb = batch[0]["prompt_embeds"].new_zeros(len(batch), Tmax, batch[0]["prompt_embeds"].shape[1])
+    mask = torch.zeros(len(batch), Tmax, dtype=torch.long)
+    for i, b in enumerate(batch):
+        T = b["prompt_embeds"].shape[0]
+        emb[i, :T] = b["prompt_embeds"]; mask[i, :T] = 1
+    return {"image": imgs, "prompt_embeds": emb, "prompt_embeds_mask": mask,
+            "file_name": [b["file_name"] for b in batch], "text": [b["text"] for b in batch]}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", required=True)
@@ -230,6 +244,8 @@ def main():
     ap.add_argument("--warmup_steps", type=int, default=50)
     ap.add_argument("--lr_schedule", default="constant", choices=["constant", "cosine", "trapezoid"])
     ap.add_argument("--grad_accum", type=int, default=1)
+    ap.add_argument("--batch_size", type=int, default=1,
+                    help="per-GPU batch; >1 needs same-resolution images and uses SDPA (the padding mask disables FA3's fast path)")
     ap.add_argument("--dataset_repeat", type=int, default=200)
     ap.add_argument("--limit", type=int, default=None, help="use only the first N images (overfit-memorize subset)")
     ap.add_argument("--seed", type=int, default=1234)
@@ -330,8 +346,8 @@ def main():
 
     ds = OverfitDataset(args.data_dir, args.text_cache, repeat=args.dataset_repeat, limit=args.limit)
     sampler = torch.utils.data.DistributedSampler(ds, world, rank, shuffle=True, seed=args.seed) if world > 1 else None
-    dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=(sampler is None), sampler=sampler,
-                                     num_workers=2, collate_fn=lambda b: b[0], drop_last=True)
+    dl = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=(sampler is None), sampler=sampler,
+                                     num_workers=2, collate_fn=collate_pad, drop_last=True)
     eval_items = load_eval_items(ds, args.n_eval, device) if args.n_eval else []
     uncond = None
     if args.uncond_embed and args.cfg_scale != 1.0:
@@ -393,16 +409,17 @@ def main():
             sampler.set_epoch(epoch)
         epoch += 1
         for data in dl:
-            x0 = data["image"].unsqueeze(0).to(device, torch.float32)
-            emb = data["prompt_embeds"].unsqueeze(0).to(device, torch.bfloat16)
+            x0 = data["image"].to(device, torch.float32)
+            emb = data["prompt_embeds"].to(device, torch.bfloat16)
             B, C, H, W = x0.shape
+            pe_mask = None if B == 1 else data["prompt_embeds_mask"].to(device)
             isl = (H // PIXEL_PATCH) * (W // PIXEL_PATCH)
             sigma = sample_sigma(B, isl, args.timestep_sampling, device, torch.float32)
             noise = torch.randn_like(x0)
             s = sigma.view(B, 1, 1, 1)
             x_t = (1 - s) * x0 + s * noise
             target = noise - x0
-            pred = model(noisy_image=x_t, timestep=sigma, prompt_embeds=emb, prompt_embeds_mask=None,
+            pred = model(noisy_image=x_t, timestep=sigma, prompt_embeds=emb, prompt_embeds_mask=pe_mask,
                          use_gradient_checkpointing=args.grad_checkpointing,
                          use_gradient_checkpointing_offload=args.grad_checkpointing_offload)
             loss = torch.nn.functional.mse_loss(pred.float(), target.float()) / args.grad_accum
@@ -513,3 +530,4 @@ def save_ckpt(model, out, step, ema=None):
 
 if __name__ == "__main__":
     main()
+

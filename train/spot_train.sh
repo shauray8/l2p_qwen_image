@@ -28,7 +28,11 @@ cd "$(dirname "$0")/.."   # repo root
 : "${NPROC:=$(python -c 'import torch;print(torch.cuda.device_count())' 2>/dev/null || nvidia-smi --list-gpus 2>/dev/null | wc -l)}"
 case "${NPROC}" in ''|*[!0-9]*|0) NPROC=8;; esac
 : "${MAX_STEPS:=20000}"
-: "${CKPT_EVERY:=50}"                                    # ~minutes of work at risk; tune to step time
+: "${CKPT_EVERY:=200}"                                   # ~minutes of work at risk; tune to step time
+: "${BATCH_SIZE:=1}"                                     # per-GPU batch; >1 needs same-res images, uses SDPA
+: "${SAMPLE_EVERY:=200}"                                 # generate sample images + log to wandb every N steps
+: "${N_EVAL:=4}"                                         # how many items to reconstruct each sample step
+: "${SAMPLE_STEPS:=28}"                                  # denoising steps per eval image
 : "${KEEP_LAST:=3}"
 : "${CKPT_OPTIM:=full}"                                  # full=resume momentum; none=smaller/faster
 : "${HF_BACKUP_REPO:=}"                                  # optional off-volume durability, e.g. shauray/l2p-ckpts
@@ -91,11 +95,11 @@ while :; do
       --resume auto --max_steps "$MAX_STEPS" \
       --ckpt_every "$CKPT_EVERY" --keep_last "$KEEP_LAST" --ckpt_optim "$CKPT_OPTIM" \
       ${HF_BACKUP_REPO:+--hf_backup_repo "$HF_BACKUP_REPO"} \
-      --dataset_repeat 1 --trainable_scope shallow --optim adamw8bit \
+      --dataset_repeat 1 --trainable_scope shallow --optim adamw8bit --batch_size "$BATCH_SIZE" \
       --lr 5e-5 --weight_decay 0.01 --warmup_steps 50 --lr_schedule cosine \
       --fa3 \
       --grad_checkpointing --max_grad_norm 1.0 \
-      --save_every 2000 --log_every 10 --sample_every 1000 --n_eval 4 \
+      --save_every 2000 --log_every 10 --sample_every "$SAMPLE_EVERY" --n_eval "$N_EVAL" --sample_steps "$SAMPLE_STEPS" \
       ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT" --wandb_name "${WANDB_NAME:-l2p-spot}"} \
       $EXTRA
   code=$?
