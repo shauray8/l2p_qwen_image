@@ -148,8 +148,13 @@ def load_resumable(path, model, opt, sched, ema):
 
     if opt is not None and payload.get("optim") is not None:
         try:
+            # Dequantize on every rank before the collective. All ranks loaded the file
+            # independently, so this is purely local — no NCCL involved. Without this,
+            # OptimState8bit tensors crash c10d.broadcast_ on rank 0 while other ranks
+            # remain blocked in the collective forever (NCCL watchdog deadlock).
+            osd = _desubclass_tensors(payload["optim"])
             set_optimizer_state_dict(
-                m, opt, payload["optim"],
+                m, opt, osd,
                 options=StateDictOptions(full_state_dict=True, broadcast_from_rank0=True))
         except Exception as e:
             if _is_main():
