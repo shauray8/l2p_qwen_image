@@ -107,7 +107,7 @@ while :; do
       --ckpt_every "$CKPT_EVERY" --keep_last "$KEEP_LAST" --ckpt_optim "$CKPT_OPTIM" \
       ${HF_BACKUP_REPO:+--hf_backup_repo "$HF_BACKUP_REPO"} \
       --dataset_repeat 1 --trainable_scope shallow --first_blocks "$FIRST_BLOCKS" --last_blocks "$LAST_BLOCKS" \
-      --optim adamw8bit --batch_size "$BATCH_SIZE" --resize_base "$RESIZE_BASE" \
+      --optim adamw --batch_size "$BATCH_SIZE" --resize_base "$RESIZE_BASE" \
       --lr 5e-5 --weight_decay 0.01 --warmup_steps 50 --lr_schedule cosine \
       --fa3 \
       --grad_checkpointing --max_grad_norm 1.0 \
