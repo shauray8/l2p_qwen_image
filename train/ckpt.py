@@ -28,6 +28,26 @@ def _is_main():
     return (not dist.is_initialized()) or dist.get_rank() == 0
 
 
+def _desubclass_tensors(obj):
+    """Recursively convert any torch.Tensor subclass (e.g. OptimState8bit) to plain float32.
+
+    torchao quantized optimizer states are Tensor subclasses that don't implement
+    c10d.broadcast_, so they can't be scattered across ranks by set_optimizer_state_dict
+    with broadcast_from_rank0=True. Flattening to plain float32 before saving makes the
+    checkpoint portable and lets the optimizer re-quantize on restore.
+    """
+    if isinstance(obj, dict):
+        return {k: _desubclass_tensors(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_desubclass_tensors(v) for v in obj)
+    if isinstance(obj, torch.Tensor) and type(obj) is not torch.Tensor:
+        # torch.zeros always returns a plain Tensor; copy_ dequantizes the subclass
+        plain = torch.zeros(obj.shape, dtype=torch.float32, device="cpu")
+        plain.copy_(obj.detach().cpu())
+        return plain
+    return obj
+
+
 def _unwrap(model):
     return model._orig_mod if hasattr(model, "_orig_mod") else model
 
@@ -64,6 +84,7 @@ def save_resumable(model, opt, sched, step, ema, ckpt_dir, keep_last=3,
     if _is_main():
         tn = _trainable_names(m)
         msd = {k: v for k, v in msd.items() if k in tn}              # trainable subset only -> small
+        osd = _desubclass_tensors(osd)                                 # plain float32 so broadcast_ works on resume
         payload = {
             "step": int(step),
             "model": msd,
