@@ -1,25 +1,7 @@
-"""
-FlashAttention-3 (Hopper) loader for Qwen-Image-2512 generation.
-
-The `kernels` PyPI release (0.15.2) can't parse the *newer* metadata schema that
-`kernels-community/flash-attn3` ships, so `get_kernel(...)` raises on metadata
-parsing. The kernel itself is a fully-built package, so we resolve the cached
-build variant and import it directly. Verified on H100 (torch 2.8 / cu128):
-
-    funcs: FlashAttnFunc, FlashAttnVarlenFunc, flash_attn_func, ...
-    flash_attn_func(q,k,v) -> finite bf16 output  ✔
-
-Usage:
-    from fa3_loader import load_fa3
-    fa3 = load_fa3()                 # module exposing flash_attn_func / flash_attn_varlen_func
-    out = fa3.flash_attn_func(q, k, v)   # q,k,v: [B, S, H, D] bf16/fp16
-"""
-
 import os, sys, glob, importlib
 from huggingface_hub import snapshot_download
 
 _REPO = "kernels-community/flash-attn3"
-
 
 def _build_tag() -> str:
     """torch28-cxx11-cu128-x86_64-linux style variant tag for this interpreter."""
@@ -28,13 +10,7 @@ def _build_tag() -> str:
     cu = "cu" + torch.version.cuda.replace(".", "")                    # 12.8  -> "cu128"
     return f"torch{tv}-cxx11-{cu}-x86_64-linux"
 
-
 def load_fa3():
-    """Download (if needed) and import the FA3 kernel, returning the module.
-
-    Fetches ONLY the build variant matching the current torch/CUDA from the
-    `main` revision (which carries the full variant matrix incl. cu130).
-    """
     import torch
     tag = _build_tag()
     cu = "cu" + torch.version.cuda.replace(".", "")
@@ -57,7 +33,6 @@ def load_fa3():
         raise RuntimeError(f"no FA3 build variant for torch={torch.__version__} ({tag})")
     variant = cands[0]
 
-    # Import the variant dir as a named package so its relative imports resolve.
     pkg_root = os.path.dirname(variant)
     alias = "_fa3_" + os.path.basename(variant).replace("-", "_").replace(".", "_")
     link_root = os.path.join(os.path.dirname(__file__), ".fa3_pkg")

@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 """
 Build an anatomy-grounded prompt pool from shauray/aesthetic-cleaned-captioned.
-
-These are real Pexels photos with detailed prose `caption`s that explicitly describe
-pose, body orientation, hands, and weight — the most reliable correct-anatomy signal
-(no LLM hallucination). We keep the human-form captions, dedup by `dup_group` (one per
-shoot) + per-photographer cap, fit them to the length window, and emit them as ready
-People/anatomy prompts for image generation.
-
-    python build_anatomy_pool.py --out prompts_anatomy.jsonl --max 1200
 """
 import argparse, json, os, re
 from collections import defaultdict
@@ -22,9 +14,7 @@ POSE = re.compile(r"\b(pose|posing|hand|arm|leg|shoulder|hip|knee|elbow|back|spi
                   r"turned|facing|leaning|stretch|bent|crossed|contrapposto|gesture|"
                   r"reclining|kneeling|seated|standing|barefoot|stride|profile)\b", re.I)
 
-
 def fit_length(text, lo=250, hi=450):
-    """Return a clean prompt within [lo,hi] chars by keeping whole sentences."""
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= hi:
         return text if len(text) >= lo else None
@@ -34,7 +24,6 @@ def fit_length(text, lo=250, hi=450):
             break
         out = (out + " " + sent).strip()
     return out if lo <= len(out) <= hi else (text[:hi].rsplit(" ", 1)[0] if len(text) > lo else None)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -79,7 +68,6 @@ def main():
         for rec in kept:
             o.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(f"kept {len(kept)} anatomy prompts (from {len(cands)} candidates) -> {args.out}")
-
 
 if __name__ == "__main__":
     main()

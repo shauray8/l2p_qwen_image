@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 """
 PickScore aesthetic curation (the Krea "quality over quantity" lever, on pixels).
-
-Scores every generated image against its own prompt with PickScore (a *human-preference*
-model — deliberately NOT a LAION-aesthetic predictor, which Krea blames for the soft/
-symmetric AI look), then keeps the top-`--keep` seeds per prompt above a score floor.
-
-Operates on a local image dir written by batch_infer.py (WebDataset shards + manifest.jsonl).
-
-    python select_aesthetic.py --image-dir out/images --keep 2 --out scored_manifest.jsonl
 """
 import argparse, glob, io, json, os, tarfile
 from collections import defaultdict
@@ -17,7 +9,6 @@ from PIL import Image
 
 PICK_MODEL = "yuvalkirstain/PickScore_v1"
 PICK_PROC  = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-
 
 def iter_images(image_dir):
     """Yield (key, prompt, PIL.Image) from all shards in image_dir."""
@@ -34,7 +25,6 @@ def iter_images(image_dir):
                 img = Image.open(io.BytesIO(t.extractfile(m).read())).convert("RGB")
                 yield key, prompts.get(key, ""), img
         t.close()
-
 
 @torch.no_grad()
 def score_all(image_dir, batch=32):
@@ -64,7 +54,6 @@ def score_all(image_dir, batch=32):
             flush()
     flush()
     return scores
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -99,7 +88,6 @@ def main():
             kept += len(keep)
     print(f"[select] kept {kept} images across {len(by_prompt)} prompts "
           f"(<= {args.keep}/prompt, >= floor) -> {args.out}")
-
 
 if __name__ == "__main__":
     main()

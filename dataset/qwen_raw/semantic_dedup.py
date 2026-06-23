@@ -1,26 +1,14 @@
 #!/usr/bin/env python3
 """
 SemDeDup-style semantic dedup + coverage check (mirrors the MD's semantic_dedup.py).
-
-- Embed every prompt with bge-small-en-v1.5 (mean-pooled, L2-normalized).
-- Greedily drop near-duplicates at cosine > --threshold (default 0.90).
-- Optionally drop prompts too close to an --against set (existing corpus), so newly
-  generated prompts don't repeat what's already on the Hub.
-- k-means coverage report: cluster-size CV + largest cluster share.
-
-    python semantic_dedup.py --in prompts_clean.jsonl --out prompts_final.jsonl \
-        --threshold 0.90 --against audit/existing_prompts.jsonl
 """
 import argparse, json, sys
 import numpy as np
-
 
 def embed(prompts, batch=256, model_name="BAAI/bge-small-en-v1.5"):
     import torch
     from transformers import AutoTokenizer, AutoModel
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    # torch 2.11/cu130 + cudnn 9.19 has a broken cuDNN SDPA plan on this box; bge is tiny
-    # so eager attention is both safe and fast.
     torch.backends.cuda.enable_cudnn_sdp(False)
     tok = AutoTokenizer.from_pretrained(model_name)
     mdl = AutoModel.from_pretrained(model_name, attn_implementation="eager").to(dev).eval().half()
@@ -40,10 +28,7 @@ def embed(prompts, batch=256, model_name="BAAI/bge-small-en-v1.5"):
     print("", file=sys.stderr)
     return np.concatenate(out, 0)
 
-
 def greedy_dedup(E, thr, ref=None, chunk=2048):
-    """Keep mask over rows of E; drop any row whose max cosine to an already-kept row
-    (or to any ref row) exceeds thr."""
     n = E.shape[0]
     keep = np.ones(n, bool)
     # drop vs reference (existing) set first

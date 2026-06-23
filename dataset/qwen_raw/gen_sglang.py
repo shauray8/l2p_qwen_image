@@ -1,20 +1,6 @@
 #!/usr/bin/env python3
 """
 Stage-D production image generation with Qwen-Image-2512 via SGLang's native backend.
-
-TOP-NOTCH quality config (no approximation): SGLang native DiT + FA3, bf16, 28 steps,
-true_cfg_scale 4.0, NO cache-dit. ~13.6 s/img on one H100 — the SGLang speedup over
-diffusers is from FA3/optimized kernels (lossless), not step-skipping.
-
-Reads a worklist jsonl: {id, prompt, super_class, sub_class, seeds:[k,...]} where `seeds`
-are the seed indices to (re)generate for that prompt. Writes WebDataset shards
-(<id>_s<k>.png + <id>_s<k>.txt, 200 imgs/shard) + manifest.jsonl, matching the existing
-l2p-dataset/part0 layout. RESUMABLE: skips <id>_s<k> already present in the manifest.
-
-    # quality (default): no cache
-    python gen_sglang.py --worklist worklist.jsonl --out-dir out/images
-    # opt-in speed (lossy, NOT default): aggressive cache
-    SGLANG_CACHE_DIT_ENABLED=1 SGLANG_CACHE_DIT_RDT=0.24 python gen_sglang.py ... --allow-cache
 """
 import argparse, io, json, os, sys, tarfile, time
 import numpy as np
@@ -25,7 +11,6 @@ BUCKETS = {"1:1": (1328, 1328), "4:3": (1472, 1104), "3:4": (1104, 1472),
 WIDE = {"Landscape", "Cityscape", "Sports", "Others"}
 TALL = {"Portrait", "anatomy_real"}
 
-
 def pick_bucket(sub_class, prompt):
     s, p = (sub_class or ""), (prompt or "").lower()
     if s in TALL or any(w in p for w in ("portrait", "standing", "full-body", "full body", "figure")):
@@ -33,7 +18,6 @@ def pick_bucket(sub_class, prompt):
     if s in WIDE or any(w in p for w in ("landscape", "vista", "panorama", "skyline", "establishing")):
         return "16:9"
     return "1:1"
-
 
 def to_pil(samples):
     from PIL import Image
@@ -89,7 +73,6 @@ class ShardWriter:
     def close(self):
         if self.tar: self.tar.close()
         self.manifest.close()
-
 
 def main():
     ap = argparse.ArgumentParser()

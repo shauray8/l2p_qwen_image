@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
 Stage-C+ normalization: strip stray markdown / quotes / enumerators / fences left by
-the LLM, collapse whitespace, enforce the length window, drop refusals & tag-soup, and
-exact-dedup (case/space-insensitive). Mirrors the MD's `clean_prompts.py`.
-
-    python clean_prompts.py --in prompts.jsonl --out prompts_clean.jsonl
 """
 import argparse, json, re, sys
 from collections import Counter
@@ -14,7 +10,6 @@ REFUSAL = re.compile(r"\b(i('| a)m sorry|i cannot|i can't|cannot assist|as an ai
 _ENUM   = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")          # "1. ", "- ", "* "
 _FENCE  = re.compile(r"^\s*```.*?$", re.M)
 _LABEL  = re.compile(r"^\s*(?:prompt|caption|image)\s*\d*\s*[:\-]\s*", re.I)
-
 
 def clean_text(p: str) -> str:
     p = _FENCE.sub("", p)
@@ -30,7 +25,6 @@ def clean_text(p: str) -> str:
     p = re.sub(r"\s+", " ", p).strip()
     p = p.strip(' "\'`')
     return p
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -65,7 +59,6 @@ def main():
             o.write(json.dumps(rec, ensure_ascii=False) + "\n")
             kept += 1; stats["ok"] += 1
     print(f"kept {kept} -> {args.out} | drops: {dict(stats)}", file=sys.stderr)
-
 
 if __name__ == "__main__":
     main()

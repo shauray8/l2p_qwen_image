@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
 vLLM offline, single H100.
-
-Pipeline (mirrors the L2P paper's framework):
-  Stage A — Subject expansion: grow a diverse, de-duplicated subject pool per
-            sub-class (LLM-expanded from hand-curated seeds).
-  Stage B — Prompt generation: feed batches of subjects through the system.txt
-            persona; model returns a JSON array of rich captions.
-  Stage C — Automated filtering: length / format / safety / dedup checks.
-
-Throughput design for the H100 80GB + Qwen3.6-35B-A3B-FP8 (3B active):
 """
 
 import argparse, json, math, os, random, re, sys, time
@@ -431,10 +422,6 @@ def main():
         categories = list(all_subclasses())
         print(f"[stage0] fixed taxonomy: {len(categories)} categories", flush=True)
     else:
-        # Diversity scales with volume: more prompts -> more invented categories,
-        # so the dataset spreads across an open-ended set instead of ~20 buckets.
-        # Paper expands 17 sub-classes into >1,000 fine-grained categories. Scale
-        # with volume so a full ~10k run lands at ~1,000+ buckets (smoke runs less).
         n_cat = args.num_categories or max(48, min(4000, math.ceil(target / 8)))
         anchors = [] if args.no_anchor_categories else list(all_subclasses())
         existing = {sub.lower() for _, sub, _ in anchors}

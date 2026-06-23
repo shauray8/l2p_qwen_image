@@ -1,25 +1,12 @@
 #!/usr/bin/env python3
 """
 Stage-D image generation with Qwen-Image-2512 (the L2P teacher).
-
-Reads a prompts jsonl ({id?, prompt, super_class?, sub_class?, seed_start?}), generates
-`--seeds` images per prompt at content-aware aspect buckets (~1.6 MP, Qwen-native), and
-writes WebDataset shards (<id>_s<k>.png + <id>_s<k>.txt, 200 imgs/shard) + manifest.jsonl
-— matching the existing l2p-dataset / part0 layout so shards append cleanly.
-
-Attention backend is pluggable for the speed benchmark:
-  --attn sdpa  : torch SDPA forced to the FLASH backend (cuDNN SDPA is broken on this box)
-  --attn fa3   : FlashAttention-3 via dataset/fa3_loader (Hopper), Qwen double-stream processor
-
-  python batch_infer.py --prompts prompts_final.jsonl --out-dir out/images \
-      --seeds 3 --steps 28 --true-cfg 4.0 --attn fa3 --magic
 """
 import argparse, io, json, os, sys, tarfile, time
 import torch
 
 MAGIC = " Ultra HD, 4K, cinematic composition."
 
-# 7 Qwen-native aspect buckets at ~1.6 MP (w, h), multiples of 16.
 BUCKETS = {
     "1:1":  (1328, 1328),
     "4:3":  (1472, 1104),
@@ -32,7 +19,6 @@ BUCKETS = {
 WIDE = {"Landscape", "Cityscape", "Sports", "Others"}
 TALL = {"Portrait", "anatomy_real"}
 SQUARE_DEFAULT = "1:1"
-
 
 def pick_bucket(sub_class, prompt):
     s = (sub_class or "")
@@ -47,9 +33,6 @@ def pick_bucket(sub_class, prompt):
 
 
 def setup_attention(pipe, mode):
-    # cuDNN SDPA plan is broken under torch 2.11/cu130 on this box — disable it GLOBALLY so
-    # the text encoder (Qwen2.5-VL, via transformers SDPA) doesn't crash, regardless of the
-    # diffusion-transformer backend we pick below.
     torch.backends.cuda.enable_cudnn_sdp(False)
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cuda.enable_mem_efficient_sdp(True)
@@ -65,13 +48,6 @@ def setup_attention(pipe, mode):
 
 
 def _install_fa3_dispatch(fa3):
-    """Route Qwen's joint attention through FA3.
-
-    The Qwen double-stream processor calls dispatch_attention_fn(q,k,v, attn_mask, ...)
-    with q,k,v already in [B, S, H, D] — FA3's native layout. For T2I inference there is
-    no attention mask, so fa3.flash_attn_func(q,k,v) is a drop-in. We patch the symbol in
-    the transformer module's namespace and fall back to the original when a mask is present.
-    """
     import diffusers.models.transformers.transformer_qwenimage as tq
     orig = tq.dispatch_attention_fn
 
@@ -91,7 +67,6 @@ def load_prompts(path):
     for i, r in enumerate(rows):
         r.setdefault("id", f"{i:08d}")
     return rows
-
 
 class ShardWriter:
     def __init__(self, out_dir, per_shard=200, start_index=0):
@@ -120,7 +95,6 @@ class ShardWriter:
     def close(self):
         if self.tar: self.tar.close()
         self.manifest.close()
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -187,7 +161,6 @@ def main():
             print(f"[gen] {done} imgs | {done/max(dt,1):.2f} img/s | {dt:.0f}s", flush=True)
     writer.close()
     print(f"\n==== DONE ==== {done} images in {time.time()-t1:.0f}s -> {args.out_dir}", flush=True)
-
 
 if __name__ == "__main__":
     main()

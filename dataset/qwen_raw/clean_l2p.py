@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-L2P "clean to the bones" — unified curation over the full corpus (new run + part0 +
-l2p-dataset). ONE GPU pass computes PickScore + pHash + image embedding per image, then:
-
-  1. per-prompt seed selection: keep top-`--keep` seeds whose PickScore >= global floor
-     (permissive for the distillation transfer — cut only clear failures);
-  2. pHash near-dup removal across survivors (cross-prompt look-alikes), vectorized;
-  3. diversity audit: k-means over survivors -> inverse-freq sampling weights;
-  4. repack survivors into WebDataset shards + manifest + sampling_weights.jsonl;
-  5. push the cleaned set to --repo.
-
-    python clean_l2p.py --src /workspace/clean/l2p-raw --src <part0_dir> --src <l2p_dataset_dir> \
-        --out-dir /workspace/clean/final --repo shauray/l2p-dataset --keep 2 --push
-"""
 import argparse, glob, io, json, os, tarfile
 import numpy as np
 import torch
@@ -23,13 +9,11 @@ torch.backends.cuda.enable_cudnn_sdp(False)   # cuDNN SDPA broken on torch2.11/c
 PICK_MODEL = "yuvalkirstain/PickScore_v1"
 PICK_PROC  = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 
-
 def _split_src(s):
     """'prefix=dir' -> (prefix, dir); bare 'dir' -> ('', dir)."""
     if "=" in s and not os.path.exists(s):
         pre, d = s.split("=", 1); return pre + "_", d
     return "", s
-
 
 def iter_shards(src_dirs):
     for s in src_dirs:
@@ -51,7 +35,6 @@ def iter_shards(src_dirs):
             for it in items:
                 yield it
 
-
 def phash_bits(img):
     size = 32
     im = img.convert("L").resize((size, size), Image.Resampling.LANCZOS)
@@ -62,7 +45,6 @@ def phash_bits(img):
     d = dct(dct(a.T).T)[:8, :8]
     bits = (d > np.median(d[1:].flatten())).flatten().astype(np.uint8)
     return bits
-
 
 @torch.no_grad()
 def pass1(src_dirs, batch=32, limit=0):
@@ -103,7 +85,6 @@ def pass1(src_dirs, batch=32, limit=0):
         r.update(meta[r["key"]])
     return rows
 
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", action="append", required=True)
@@ -125,7 +106,6 @@ def main():
     print(f"[floor] PickScore p{args.floor_percentile:.0f} = {floor:.2f} "
           f"(mean {scores.mean():.2f}, p50 {np.percentile(scores,50):.2f})")
 
-    # 1) per-prompt best-k above floor
     from collections import defaultdict
     by_pid = defaultdict(list)
     for r in rows:
@@ -137,7 +117,6 @@ def main():
     print(f"[select] {len(sel)} images after per-prompt top-{args.keep} + floor "
           f"(from {len(by_pid)} prompts)")
 
-    # 2) pHash dedup across survivors (vectorized Hamming)
     sel.sort(key=lambda r: -r["score"])      # keep the higher-scored of a near-dup pair
     kept, kept_bits = [], np.zeros((0, 64), np.uint8)
     for r in sel:
@@ -147,7 +126,6 @@ def main():
         kept_bits = np.vstack([kept_bits, b]); kept.append(r)
     print(f"[phash] {len(kept)} images after near-dup removal (dropped {len(sel)-len(kept)})")
 
-    # 3) diversity weights
     from sklearn.cluster import KMeans
     E = np.stack([r["emb"] for r in kept])
     k = min(args.k, max(2, len(kept) // 20))
@@ -161,7 +139,6 @@ def main():
 
     keep_keys = {r["key"]: (int(km.labels_[i]), float(inv[i])) for i, r in enumerate(kept)}
 
-    # 4) repack survivors (second pass over shards, read only kept) + weights
     os.makedirs(args.out_dir, exist_ok=True)
     man = open(os.path.join(args.out_dir, "manifest.jsonl"), "w", encoding="utf-8")
     wts = open(os.path.join(args.out_dir, "sampling_weights.jsonl"), "w", encoding="utf-8")
@@ -191,7 +168,6 @@ def main():
         api.upload_folder(folder_path=args.out_dir, repo_id=args.repo, repo_type="dataset",
                           commit_message=f"L2P cleaned set: {cnt} curated (prompt,image) pairs")
         print(f"[push] pushed {cnt} images -> https://huggingface.co/datasets/{args.repo}")
-
 
 if __name__ == "__main__":
     main()

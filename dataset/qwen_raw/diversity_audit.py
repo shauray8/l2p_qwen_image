@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 """
 Visual-manifold diversity audit (the real "is it just shrimp/bear/ocean?" check).
-
-Embeds each image with CLIP, k-means clusters, reports coverage health (CV, largest /
-top-10 mode share, effective #modes), and emits per-image inverse-frequency sampling
-weights so over-represented visual modes get down-weighted in the transfer dataloader —
-fixing repetition WITHOUT deleting or regenerating anything.
-
-    python diversity_audit.py --image-dir out/images --k 200 \
-        --report diversity_report.json --weights sampling_weights.jsonl
 """
 import argparse, glob, io, json, os, tarfile
 import numpy as np
@@ -16,7 +8,6 @@ import torch
 from PIL import Image
 
 CLIP = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-
 
 def iter_images(image_dir, only_keys=None):
     for tar in sorted(glob.glob(os.path.join(image_dir, "*.tar"))):
@@ -28,7 +19,6 @@ def iter_images(image_dir, only_keys=None):
                     continue
                 yield key, Image.open(io.BytesIO(t.extractfile(m).read())).convert("RGB")
         t.close()
-
 
 @torch.no_grad()
 def embed(image_dir, only_keys=None, batch=64):
@@ -52,7 +42,6 @@ def embed(image_dir, only_keys=None, batch=64):
             flush()
     flush()
     return keys, (np.concatenate(embs, 0) if embs else np.zeros((0, 1024)))
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -102,7 +91,6 @@ def main():
         for key, lab, w in zip(keys, labels, inv):
             o.write(json.dumps({"id": key, "cluster": int(lab), "weight": round(float(w), 4)}) + "\n")
     print(f"[weights] wrote {n} sampling weights -> {args.weights}")
-
 
 if __name__ == "__main__":
     main()
