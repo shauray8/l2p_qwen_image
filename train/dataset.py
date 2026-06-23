@@ -3,7 +3,6 @@ import torch
 from PIL import Image
 import numpy as np
 
-
 def target_hw(h, w, base):
     """Scale (h,w) to ~base*base AREA, preserve aspect ratio, round each side to a multiple
     of 16 (the pixel patch size), min 16. base<=0 -> unchanged (native resolution).
@@ -14,7 +13,6 @@ def target_hw(h, w, base):
     nh = max(16, int(round(h * s / 16)) * 16)
     nw = max(16, int(round(w * s / 16)) * 16)
     return nh, nw
-
 
 class OverfitDataset(torch.utils.data.Dataset):
     def __init__(self, data_dir, text_cache=None, repeat=1, limit=None, resize_base=0):

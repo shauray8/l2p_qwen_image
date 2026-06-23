@@ -18,9 +18,7 @@ from optimizers import build_optimizer  # noqa: E402
 import sample_eval  # noqa: E402
 import ckpt as ckptlib  # noqa: E402
 
-# Set by the SIGTERM handler. RunPod spot eviction sends SIGTERM ~5s before SIGKILL — too
-# short to write a checkpoint, so we just flip this flag, stop cleanly at the next step
-# boundary, and rely on the periodic checkpoint already on the network volume.
+# Set by the SIGTERM handler. RunPod spot eviction sends SIGTERM ~5s before SIGKILL
 STOP = False
 
 def _on_sigterm(signum, frame):
@@ -121,15 +119,6 @@ def build_model(args, cfg, device):
 
 
 def enable_fa3():
-    """Route the Qwen DiT's joint attention through FlashAttention-3 (Hopper).
-
-    Reuses the proven loader + monkeypatch from the dataset pipeline (dataset/fa3_loader.py,
-    batch_infer._install_fa3_dispatch). FA3's flash_attn_func is a differentiable
-    autograd.Function, so this works for TRAINING (forward + backward), under FSDP2 and
-    non-reentrant gradient checkpointing. The fast path only fires with no attention mask
-    (our case: batch=1, prompt_embeds_mask=None) and bf16/fp16 q,k,v; anything else falls
-    back to the original SDPA dispatch, so it can never silently corrupt a masked step.
-    """
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dataset"))
     from fa3_loader import load_fa3
     import diffusers.models.transformers.transformer_qwenimage as tq
@@ -233,10 +222,6 @@ def collate_pad(batch):
 
 
 class ResolutionBatchSampler:
-    """Batches of `batch_size` indices that share an image resolution, sharded across `world`
-    ranks. Lets us batch a variable-resolution dataset (FSDP allows different shapes per rank,
-    since grads reduce per-parameter). Bucket remainders (< batch_size) are dropped; each rank
-    gets an equal number of batches so collectives stay in lockstep."""
     def __init__(self, sizes, batch_size, world, rank, seed=0):
         from collections import defaultdict
         self.bs, self.world, self.rank, self.seed = batch_size, max(1, world), rank, seed
@@ -581,4 +566,3 @@ def save_ckpt(model, out, step, ema=None):
 
 if __name__ == "__main__":
     main()
-

@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Materialize the curated WebDataset (shauray/l2p-clean) into the on-disk layout the trainer
-expects: <out>/images/<key>.png + <out>/metadata.csv (columns: file_name,text).
-
-Idempotent: if metadata.csv already exists with the expected row count, it's a no-op, so it
-can sit in the spot entrypoint and only run on the first boot of a fresh network volume.
-
-    python prep_data.py --repo shauray/l2p-clean --out /workspace/data/l2p-clean
+Materialize the curated WebDataset (shauray/l2p-clean) into the on-disk layout
 """
 import argparse, csv, glob, io, os, tarfile
 
