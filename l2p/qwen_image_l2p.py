@@ -13,14 +13,12 @@ except ImportError:
 PIXEL_PATCH = 16
 IN_CH = 3
 
-
 def patchify_pixels(img: torch.Tensor, p: int = PIXEL_PATCH):
     B, C, H, W = img.shape
     assert H % p == 0 and W % p == 0, f"H,W must be divisible by {p}, got {H}x{W}"
     Ht, Wt = H // p, W // p
     x = img.view(B, C, Ht, p, Wt, p).permute(0, 2, 4, 1, 3, 5).reshape(B, Ht * Wt, C * p * p)
     return x, Ht, Wt
-
 
 class QwenImageL2P(nn.Module):
     def __init__(

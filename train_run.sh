@@ -6,7 +6,7 @@ MODEL="${MODEL:-Qwen/Qwen-Image-2512}"
 DATA=data/overfit_500
 INIT=pretrain_weight/Qwen-Image-Pixel-Init/model.safetensors
 
-# overfit set = first 500 of the cleaned dataset (curate_overfit.py was removed; prep + --limit)
+# overfit set = first 500 of the cleaned dataset
 [ -f "$DATA/metadata.csv" ] || python train/prep_data.py --repo "${REPO:-shauray/l2p-clean}" --out "$DATA"
 
 [ -f "$INIT" ] || python l2p/convert_weights.py --model "$MODEL" --output "$INIT"
@@ -24,4 +24,3 @@ if [ "$NPROC" -eq 1 ]; then
 else
   torchrun --nproc_per_node="$NPROC" train/train_overfit_fsdp2.py "${LAUNCH[@]}" $EXTRA
 fi
-

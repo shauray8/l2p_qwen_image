@@ -2,8 +2,6 @@
 """
 Convert pretrained Qwen-Image-2512 (latent) transformer weights into an L2P
 pixel-space initialization.
-
-Output is a single safetensors holding the full QwenImageL2P state_dict
 """
 import argparse, json, os
 
@@ -14,7 +12,6 @@ from huggingface_hub import hf_hub_download, snapshot_download
 from diffusers import QwenImageTransformer2DModel
 
 from qwen_image_l2p import QwenImageL2P, IN_CH, PIXEL_PATCH
-
 
 def load_source_transformer_sd(model_id_or_path: str):
     if os.path.isdir(model_id_or_path):

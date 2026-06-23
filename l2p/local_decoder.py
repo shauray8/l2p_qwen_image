@@ -2,19 +2,11 @@
 Local pixel decoder for L2P (Latent->Pixel) on Qwen-Image.
 
 A small U-Net ("MicroDiffusionModel") that takes the *noisy RGB image* and the
-DiT's per-patch feature map (injected at the bottleneck) and predicts the
-flow-matching velocity directly in pixel space — replacing the VAE decoder.
-
-Ported from the Z-Image L2P implementation (DiP / L2P papers). The encoder
-pools 4× by stride-2 (total 16×), which matches the L2P pixel patch size of 16:
-a 16×16 pixel patch == one DiT token, so the bottleneck spatial grid equals the
-DiT feature-map grid (H/16, W/16). si_t_hidden_size = transformer inner dim.
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as ckpt
-
 
 def _gc(fn, use_ckpt, use_offload, *args):
     if use_ckpt and torch.is_grad_enabled():
