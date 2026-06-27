@@ -75,6 +75,15 @@ def sample_sigma(batch, image_seq_len, mode, device, dtype):
         pin = torch.rand(batch, device=device) < p_one
         u = torch.where(pin, torch.full_like(u, 1 - 1e-3), u)
         return u.clamp(1e-4, 1 - 1e-4).to(dtype)
+    elif mode == "lownoise":
+        # bias toward LOW sigma (low-noise / fine-detail regime) for L2P transfer.
+        # mirror of "highnoise": cube concentrates mass near 0, and we pin a fraction
+        # near the clean end. No qwen shift (that pushes mass toward high noise).
+        u = torch.rand(batch, device=device).pow(3)
+        p_zero = 0.2
+        pin = torch.rand(batch, device=device) < p_zero
+        u = torch.where(pin, torch.full_like(u, 1e-3), u)
+        return u.clamp(1e-4, 1 - 1e-4).to(dtype)
     else:  # qwen_shift
         u = shift(torch.rand(batch, device=device))
     return u.clamp(1e-4, 1 - 1e-4).to(dtype)
@@ -276,7 +285,7 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="use only the first N images (overfit-memorize subset)")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--timestep_sampling", default="qwen_shift",
-                    choices=["uniform", "logit_normal", "qwen_shift", "highnoise", "force_text"])
+                    choices=["uniform", "logit_normal", "qwen_shift", "highnoise", "lownoise", "force_text"])
     ap.add_argument("--grad_checkpointing", action="store_true", default=True)
     ap.add_argument("--no_grad_checkpointing", dest="grad_checkpointing", action="store_false")
     ap.add_argument("--grad_checkpointing_offload", action="store_true")
@@ -316,6 +325,10 @@ def main():
     ap.add_argument("--sample_every", type=int, default=100)
     ap.add_argument("--sample_steps", type=int, default=24)
     ap.add_argument("--n_eval", type=int, default=2, help="# fixed training items to recon-eval")
+    ap.add_argument("--extra_eval", type=int, default=0,
+                    help="# additional eval items sampled at --sample_steps_hi (high-quality preview)")
+    ap.add_argument("--sample_steps_hi", type=int, default=50,
+                    help="denoising steps for the --extra_eval samples")
     ap.add_argument("--eval_seed", type=int, default=0)
     ap.add_argument("--resize_base", type=int, default=0,
                     help="resize images to ~base*base AREA (AR preserved, /16). 0=native. 1024 keeps memory uniform across buckets")
@@ -384,7 +397,11 @@ def main():
         sampler = torch.utils.data.DistributedSampler(ds, world, rank, shuffle=True, seed=args.seed) if world > 1 else None
         dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=(sampler is None), sampler=sampler,
                                          num_workers=2, collate_fn=collate_pad, drop_last=True)
-    eval_items = load_eval_items(ds, args.n_eval, device, seed=args.eval_seed) if args.n_eval else []
+    n_total_eval = args.n_eval + args.extra_eval
+    eval_items = load_eval_items(ds, n_total_eval, device, seed=args.eval_seed) if n_total_eval else []
+    # per-item denoising steps: first n_eval at sample_steps, the extras at sample_steps_hi
+    eval_steps = ([args.sample_steps] * args.n_eval
+                  + [args.sample_steps_hi] * args.extra_eval)[:len(eval_items)]
     uncond = None
     if args.uncond_embed and args.cfg_scale != 1.0:
         uncond = torch.load(args.uncond_embed, weights_only=True)["prompt_embeds"]
@@ -398,7 +415,7 @@ def main():
     hist = {"loss": [], "grad_norm": [], "psnr": []}
 
     def _recon():
-        return sample_eval.recon_metrics(gen_model, eval_items, args.sample_steps, device,
+        return sample_eval.recon_metrics(gen_model, eval_items, eval_steps, device,
                                          args.eval_seed, uncond_embeds=uncond, cfg_scale=args.cfg_scale)
 
     def do_eval(step):
@@ -417,8 +434,8 @@ def main():
         if not use_wandb:
             log(f"  eval@{step}: recon_psnr {psnr:.2f}" + (f" (ema {ema_psnr:.2f})" if ema_psnr else ""))
             return
-        imgs = [wandb.Image(np.concatenate([g, gt], axis=1), caption=f"{os.path.basename(fn)} (gen|gt)")
-                for g, gt, fn in pairs]
+        imgs = [wandb.Image(np.concatenate([g, gt], axis=1), caption=f"{os.path.basename(fn)} (gen|gt) {st}st")
+                for g, gt, fn, st in pairs]
         d = {"eval/recon_psnr": psnr, "samples": imgs}
         if lp is not None:
             d["eval/recon_lpips"] = lp

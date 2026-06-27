@@ -11,8 +11,8 @@ cd "$(dirname "$0")/.."
 
 : "${NPROC:=$(python -c 'import torch;print(torch.cuda.device_count())' 2>/dev/null || nvidia-smi --list-gpus 2>/dev/null | wc -l)}"
 case "${NPROC}" in ''|*[!0-9]*|0) NPROC=8;; esac
-: "${MAX_STEPS:=20000}"
-: "${CKPT_EVERY:=50}"                                    # resumable ckpt cadence; small w/ adamw8bit so 50 is cheap
+: "${MAX_STEPS:=50000}"
+: "${CKPT_EVERY:=200}"                                   # resumable ckpt cadence (aligned with SAMPLE_EVERY)
 : "${BATCH_SIZE:=auto}"                                  # per-GPU batch; "auto" scales to GPU mem (H200->8, H100->4)
 if [ "$BATCH_SIZE" = auto ]; then
   _memmib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9); _memmib=${_memmib:-0}
@@ -25,6 +25,10 @@ fi
 : "${SAMPLE_EVERY:=200}"                                 # generate sample images + log to wandb every N steps
 : "${N_EVAL:=4}"                                         # how many items to reconstruct each sample step
 : "${SAMPLE_STEPS:=28}"                                  # denoising steps per eval image
+: "${EXTRA_EVAL:=1}"                                     # extra high-quality sample(s) at SAMPLE_STEPS_HI (5th image)
+: "${SAMPLE_STEPS_HI:=50}"                               # denoising steps for the EXTRA_EVAL sample(s)
+: "${LR_SCHEDULE:=constant}"                             # fixed LR; set cosine to revert to the decay schedule
+: "${TIMESTEP_SAMPLING:=lownoise}"                       # bias toward low sigma; set qwen_shift to revert
 : "${RESIZE_BASE:=0}"                                    # resize imgs to ~NxN area (AR kept); 0=native, 1024=uniform mem
 : "${FIRST_BLOCKS:=6}"                                   # trainable leading DiT blocks (overfit-validated: 6)
 : "${LAST_BLOCKS:=6}"                                    # trainable trailing DiT blocks (overfit-validated: 6)
@@ -79,10 +83,12 @@ while :; do
       ${HF_BACKUP_REPO:+--hf_backup_repo "$HF_BACKUP_REPO"} \
       --dataset_repeat 1 --trainable_scope shallow --first_blocks "$FIRST_BLOCKS" --last_blocks "$LAST_BLOCKS" \
       --optim adamw --batch_size "$BATCH_SIZE" --resize_base "$RESIZE_BASE" \
-      --lr 5e-5 --weight_decay 0.01 --warmup_steps 50 --lr_schedule cosine \
+      --lr 5e-5 --weight_decay 0.01 --warmup_steps 50 --lr_schedule "$LR_SCHEDULE" \
+      --timestep_sampling "$TIMESTEP_SAMPLING" \
       --fa3 \
       --grad_checkpointing --max_grad_norm 1.0 \
       --save_every 2000 --log_every 10 --sample_every "$SAMPLE_EVERY" --n_eval "$N_EVAL" --sample_steps "$SAMPLE_STEPS" \
+      --extra_eval "$EXTRA_EVAL" --sample_steps_hi "$SAMPLE_STEPS_HI" \
       ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT" --wandb_name "${WANDB_NAME:-l2p-spot}"} \
       $EXTRA
   code=$?

@@ -62,16 +62,18 @@ def _lpips(a, b, device):
 
 @torch.no_grad()
 def recon_metrics(model, eval_items, steps, device, seed=0, uncond_embeds=None, cfg_scale=1.0):
+    """steps: int applied to every item, or a per-item list/tuple of step counts."""
     psnrs, lpips_vals, pairs = [], [], []
-    for it in eval_items:
+    for i, it in enumerate(eval_items):
+        st = steps[i] if isinstance(steps, (list, tuple)) else steps
         H, W = it["image_np"].shape[:2]
-        gen = sample(model, it["prompt_embeds"], H, W, steps, device, seed=seed,
+        gen = sample(model, it["prompt_embeds"], H, W, st, device, seed=seed,
                      uncond_embeds=uncond_embeds, cfg_scale=cfg_scale)
         psnrs.append(_psnr(gen, it["image_np"]))
         lv = _lpips(gen, it["image_np"], device)
         if lv is not None:
             lpips_vals.append(lv)
-        pairs.append((gen, it["image_np"], it["file_name"]))
+        pairs.append((gen, it["image_np"], it["file_name"], st))
     return (float(np.mean(psnrs)),
             float(np.mean(lpips_vals)) if lpips_vals else None,
             pairs)
