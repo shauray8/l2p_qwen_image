@@ -86,6 +86,39 @@ class QwenImageL2P(nn.Module):
             hidden_states = dit.norm_out(hidden_states, temb)
         return hidden_states  # [B, img_len, dim]
 
+    def forward_features(
+        self,
+        noisy_image: torch.Tensor,            # [B, 3, H, W]
+        timestep: torch.Tensor,               # [B], flow-matching sigma in [0,1]
+        prompt_embeds: torch.Tensor,          # [B, T, joint_attention_dim]
+        prompt_embeds_mask: Optional[torch.Tensor] = None,  # [B, T]
+        use_gradient_checkpointing: bool = False,
+        use_gradient_checkpointing_offload: bool = False,
+    ) -> torch.Tensor:
+        """Run only the DiT backbone -> spatial feature map [B, inner_dim, Ht, Wt]."""
+        B, C, H, W = noisy_image.shape
+        tokens, Ht, Wt = patchify_pixels(noisy_image, self.pixel_patch)
+        tokens = tokens.to(self.dit.img_in.weight.dtype)
+        img_shapes = [(1, Ht, Wt)] * B
+        img_hidden = self._run_backbone(
+            tokens, prompt_embeds, prompt_embeds_mask, timestep, img_shapes,
+            use_gradient_checkpointing, use_gradient_checkpointing_offload)
+        return img_hidden.view(B, Ht, Wt, self.inner_dim).permute(0, 3, 1, 2).contiguous()
+
+    def decode(
+        self,
+        noisy_image: torch.Tensor,            # [B, 3, H, W]
+        feat_map: torch.Tensor,               # [B, inner_dim, Ht, Wt] from forward_features
+        use_gradient_checkpointing: bool = False,
+        use_gradient_checkpointing_offload: bool = False,
+    ) -> torch.Tensor:
+        """Run only the local decoder head on a precomputed feature map to velocity."""
+        return self.local_decoder(
+            noisy_image.to(feat_map.dtype), feat_map,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+        )
+
     def forward(
         self,
         noisy_image: torch.Tensor,            # [B, 3, H, W]
@@ -95,18 +128,11 @@ class QwenImageL2P(nn.Module):
         use_gradient_checkpointing: bool = False,
         use_gradient_checkpointing_offload: bool = False,
     ) -> torch.Tensor:
-        B, C, H, W = noisy_image.shape
-        tokens, Ht, Wt = patchify_pixels(noisy_image, self.pixel_patch)
-        tokens = tokens.to(self.dit.img_in.weight.dtype)
-        img_shapes = [(1, Ht, Wt)] * B
-
-        img_hidden = self._run_backbone(
-            tokens, prompt_embeds, prompt_embeds_mask, timestep, img_shapes,
+        feat_map = self.forward_features(
+            noisy_image, timestep, prompt_embeds, prompt_embeds_mask,
             use_gradient_checkpointing, use_gradient_checkpointing_offload)
-
-        feat_map = img_hidden.view(B, Ht, Wt, self.inner_dim).permute(0, 3, 1, 2).contiguous()
-        velocity = self.local_decoder(
-            noisy_image.to(feat_map.dtype), feat_map,
+        velocity = self.decode(
+            noisy_image, feat_map,
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
         )
