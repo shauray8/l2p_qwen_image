@@ -51,6 +51,40 @@ def log(msg):
     if is_main():
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
+def _free_gb(path):
+    import shutil
+    try:
+        return shutil.disk_usage(path).free / 1e9
+    except OSError:
+        return float("inf")
+
+def ensure_free_space(groups, min_free_gb):
+    """Before a save, if free disk < min_free_gb, delete OLDEST checkpoints across the
+    given (dir, glob) groups until there's room. The newest file in each group is kept,
+    so we never delete the very latest resumable ckpt or export. Rank-0 only; no-op if
+    min_free_gb<=0 or there's already room."""
+    if not is_main() or min_free_gb <= 0:
+        return
+    import glob, re
+    ref = groups[0][0]
+    if _free_gb(ref) >= min_free_gb:
+        return
+    def _step(p):
+        m = re.search(r"-(\d+)", os.path.basename(p))
+        return int(m.group(1)) if m else -1
+    deletable = []
+    for d, pat in groups:
+        files = sorted(glob.glob(os.path.join(d, pat)), key=_step)
+        deletable += [(_step(p), p) for p in files[:-1]]   # keep newest of each group
+    for _, p in sorted(deletable):                          # oldest first
+        if _free_gb(ref) >= min_free_gb:
+            break
+        try:
+            os.remove(p)
+            log(f"low disk (<{min_free_gb}GB): removed {os.path.basename(p)} — free now {_free_gb(ref):.1f}GB")
+        except OSError:
+            pass
+
 def qwen_shift_mu(image_seq_len):
     m = (0.9 - 0.5) / (8192 - 256)
     return image_seq_len * m + (0.5 - m * 256)
@@ -320,6 +354,10 @@ def main():
     ap.add_argument("--ema_decay", type=float, default=0.999)
     ap.add_argument("--ema_update_every", type=int, default=8)
     ap.add_argument("--save_every", type=int, default=0)
+    ap.add_argument("--keep_last_export", type=int, default=3,
+                    help="how many full-model step-N.safetensors exports to retain (0=keep all)")
+    ap.add_argument("--min_free_gb", type=float, default=20.0,
+                    help="before each save, if free disk < this, delete oldest checkpoints to make room (0=off)")
     ap.add_argument("--log_every", type=int, default=10)
     # sampling / eval
     ap.add_argument("--sample_every", type=int, default=100)
@@ -525,14 +563,28 @@ def main():
                                "perf/peak_gb": mem}, step=step)
 
             step += 1
-            if args.sample_every and step % args.sample_every == 0:
-                do_eval(step)
-            if args.save_every and step % args.save_every == 0:
-                save_ckpt(model, args.output_dir, step, ema)
+            # checkpoint BEFORE eval: do_eval is heavy (multi-step sampling + decoder recon)
+            # and can throw; if it ran first a crash would rewind the whole window on resume.
             if args.ckpt_every and step % args.ckpt_every == 0:
+                ensure_free_space([(ckpt_dir, "ckpt-*.pt"),
+                                   (args.output_dir, "step-*.safetensors")], args.min_free_gb)
                 ckptlib.save_resumable(model, opt, sched, step, ema, ckpt_dir,
                                        keep_last=args.keep_last, save_optim=save_optim,
                                        hf_repo=args.hf_backup_repo)
+            if args.save_every and step % args.save_every == 0:
+                ensure_free_space([(ckpt_dir, "ckpt-*.pt"),
+                                   (args.output_dir, "step-*.safetensors")], args.min_free_gb)
+                try:
+                    save_ckpt(model, args.output_dir, step, ema, keep_last=args.keep_last_export)
+                except Exception as e:
+                    log(f"WARN export@{step} failed ({type(e).__name__}: {e}) — skipping, training continues")
+            if args.sample_every and step % args.sample_every == 0:
+                # never let an eval/sampling error kill training — the checkpoint is already
+                # safe above, so just log and continue to the next step.
+                try:
+                    do_eval(step)
+                except Exception as e:
+                    log(f"WARN eval@{step} failed ({type(e).__name__}: {e}) — skipping, training continues")
             if STOP:
                 log("stopping on SIGTERM — writing final resumable checkpoint")
                 ckptlib.save_resumable(model, opt, sched, step, ema, ckpt_dir,
@@ -551,7 +603,7 @@ def main():
         ckptlib.save_resumable(model, opt, sched, step, ema, ckpt_dir,
                                keep_last=args.keep_last, save_optim=save_optim,
                                hf_repo=args.hf_backup_repo)
-        save_ckpt(model, args.output_dir, step, ema)
+        save_ckpt(model, args.output_dir, step, ema, keep_last=args.keep_last_export)
 
     if completed and is_main():
         import numpy as np
@@ -585,7 +637,7 @@ def main():
     if not completed:
         sys.exit(42)
 
-def save_ckpt(model, out, step, ema=None):
+def save_ckpt(model, out, step, ema=None, keep_last=0):
     if hasattr(model, "_orig_mod"):
         model = model._orig_mod
     try:
@@ -595,12 +647,29 @@ def save_ckpt(model, out, step, ema=None):
     if is_main():
         save_file({k: v.contiguous() for k, v in sd.items()}, os.path.join(out, f"step-{step}.safetensors"))
         log(f"saved step-{step}.safetensors")
-        if ema is not None: 
+        if ema is not None:
             esd = dict(sd)
             for n, t in ema.ema.items():
                 esd[n] = t.to(torch.bfloat16).contiguous()
             save_file(esd, os.path.join(out, f"step-{step}-ema.safetensors"))
             log(f"saved step-{step}-ema.safetensors")
+        # retention: these are FULL-model exports (large). Without pruning they accumulate
+        # every save_every and fill the volume, which crashes the write at a later
+        # 2000-multiple (e.g. step 10000) and rewinds training. keep_last<=0 keeps all.
+        if keep_last and keep_last > 0:
+            import glob, re
+            def _step(p):
+                m = re.search(r"step-(\d+)", os.path.basename(p))
+                return int(m.group(1)) if m else -1
+            allf = glob.glob(os.path.join(out, "step-*.safetensors"))
+            for group in ([p for p in allf if "-ema" not in os.path.basename(p)],
+                          [p for p in allf if "-ema" in os.path.basename(p)]):
+                for old in sorted(group, key=_step)[:-keep_last]:
+                    try:
+                        os.remove(old)
+                        log(f"pruned old export {os.path.basename(old)}")
+                    except OSError:
+                        pass
     if dist.is_initialized():
         dist.barrier()
 

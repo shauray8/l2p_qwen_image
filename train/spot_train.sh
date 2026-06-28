@@ -33,7 +33,9 @@ fi
 : "${RESIZE_BASE:=0}"                                    # resize imgs to ~NxN area (AR kept); 0=native, 1024=uniform mem
 : "${FIRST_BLOCKS:=6}"                                   # trainable leading DiT blocks (overfit-validated: 6)
 : "${LAST_BLOCKS:=6}"                                    # trainable trailing DiT blocks (overfit-validated: 6)
-: "${KEEP_LAST:=3}"
+: "${KEEP_LAST:=3}"                                      # resumable ckpts to retain
+: "${KEEP_LAST_EXPORT:=3}"                               # full-model step-N.safetensors exports to retain
+: "${MIN_FREE_GB:=20}"                                   # if free disk < this before a save, delete oldest ckpts to make room
 : "${CKPT_OPTIM:=full}"                                  # full=resume momentum; none=smaller/faster
 : "${HF_BACKUP_REPO:=}"                                  # optional off-volume durability, e.g. shauray/l2p-ckpts
 : "${EXTRA:=}"                                           # any extra train args
@@ -81,6 +83,7 @@ while :; do
       --output_dir "$RUN_DIR" --ckpt_dir "$RUN_DIR/ckpt" \
       --resume auto --max_steps "$MAX_STEPS" \
       --ckpt_every "$CKPT_EVERY" --keep_last "$KEEP_LAST" --ckpt_optim "$CKPT_OPTIM" \
+      --keep_last_export "$KEEP_LAST_EXPORT" --min_free_gb "$MIN_FREE_GB" \
       ${HF_BACKUP_REPO:+--hf_backup_repo "$HF_BACKUP_REPO"} \
       --dataset_repeat 1 --trainable_scope shallow --first_blocks "$FIRST_BLOCKS" --last_blocks "$LAST_BLOCKS" \
       --optim adamw --batch_size "$BATCH_SIZE" --resize_base "$RESIZE_BASE" \
