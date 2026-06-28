@@ -43,6 +43,54 @@ def sample(model, prompt_embeds, height, width, steps, device, seed=0, dtype=tor
     img = ((x[0].clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8).permute(1, 2, 0).cpu().numpy()
     return img  # HxWx3 uint8
 
+@torch.no_grad()
+def decoder_recon(model, prompt_embeds, gt_np, device, sigma=0.05, seed=0,
+                  prompt_embeds_mask=None, dtype=torch.bfloat16):
+    """Decoder-only reconstruction probe (single image, single step).
+
+    Adds a small amount of flow-matching noise to a CLEAN image and recovers x0 in
+    one step, isolating the local-decoder head from the multi-step sampler:
+        x_t      = (1-sigma)*gt + sigma*noise
+        v_pred   = model(x_t, sigma, emb)            # velocity = noise - x0
+        x0_hat   = x_t - sigma * v_pred              # exact when v_pred is exact
+
+    The decoder here predicts VELOCITY, not an image, so sigma=0 is degenerate
+    (x0_hat == x_t == gt, PSNR=100). Use a small nonzero sigma; lower -> closer to
+    a pure identity/decoder check. gt_np: HxWx3 uint8. Returns HxWx3 uint8.
+    """
+    was_training = model.training
+    model.eval()
+    g = torch.Generator(device=device).manual_seed(seed)
+    gt = torch.from_numpy(gt_np).to(device).permute(2, 0, 1)[None].float() / 127.5 - 1.0  # [1,3,H,W] in [-1,1]
+    s = float(sigma)
+    noise = torch.randn(gt.shape, generator=g, device=device, dtype=torch.float32)
+    x_t = (1 - s) * gt + s * noise
+    emb = prompt_embeds.unsqueeze(0).to(device, dtype)
+    pmask = prompt_embeds_mask.unsqueeze(0).to(device) if prompt_embeds_mask is not None else None
+    feat = model.forward_features(x_t, torch.full((1,), s, device=device), emb, pmask)
+    v = model.decode(x_t, feat).float()
+    x0 = x_t if s == 0 else x_t - s * v
+    if was_training:
+        model.train()
+    return ((x0[0].clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8).permute(1, 2, 0).cpu().numpy()
+
+
+@torch.no_grad()
+def decoder_recon_metrics(model, eval_items, device, sigma=0.05, seed=0):
+    """Run decoder_recon over eval_items; return (mean_psnr, mean_lpips|None, pairs)."""
+    psnrs, lpips_vals, pairs = [], [], []
+    for it in eval_items:
+        gen = decoder_recon(model, it["prompt_embeds"], it["image_np"], device, sigma=sigma, seed=seed)
+        psnrs.append(_psnr(gen, it["image_np"]))
+        lv = _lpips(gen, it["image_np"], device)
+        if lv is not None:
+            lpips_vals.append(lv)
+        pairs.append((gen, it["image_np"], it["file_name"]))
+    return (float(np.mean(psnrs)),
+            float(np.mean(lpips_vals)) if lpips_vals else None,
+            pairs)
+
+
 def _psnr(a, b):  # a,b uint8 HxWx3
     mse = np.mean((a.astype(np.float32) - b.astype(np.float32)) ** 2)
     return 100.0 if mse == 0 else 20 * math.log10(255.0) - 10 * math.log10(mse)

@@ -75,14 +75,14 @@ def sample_sigma(batch, image_seq_len, mode, device, dtype):
         pin = torch.rand(batch, device=device) < p_one
         u = torch.where(pin, torch.full_like(u, 1 - 1e-3), u)
         return u.clamp(1e-4, 1 - 1e-4).to(dtype)
-    elif mode == "lownoise":
-        # bias toward LOW sigma (low-noise / fine-detail regime) for L2P transfer.
-        # mirror of "highnoise": cube concentrates mass near 0, and we pin a fraction
-        # near the clean end. No qwen shift (that pushes mass toward high noise).
-        u = torch.rand(batch, device=device).pow(3)
-        p_zero = 0.2
-        pin = torch.rand(batch, device=device) < p_zero
-        u = torch.where(pin, torch.full_like(u, 1e-3), u)
+    elif mode == "balanced":
+        # full-span [0,1] with mass at BOTH ends: half the batch is biased toward low
+        # sigma (fine-detail / decoder regime), half toward high sigma (structure).
+        # rand^3 concentrates near 0; 1-rand^3 mirrors it near 1; the cube still leaves
+        # coverage across the middle, so the whole schedule is sampled, not a subset.
+        lo = torch.rand(batch, device=device).pow(3)
+        hi_half = torch.rand(batch, device=device) < 0.5
+        u = torch.where(hi_half, 1.0 - lo, lo)
         return u.clamp(1e-4, 1 - 1e-4).to(dtype)
     else:  # qwen_shift
         u = shift(torch.rand(batch, device=device))
@@ -285,7 +285,7 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="use only the first N images (overfit-memorize subset)")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--timestep_sampling", default="qwen_shift",
-                    choices=["uniform", "logit_normal", "qwen_shift", "highnoise", "lownoise", "force_text"])
+                    choices=["uniform", "logit_normal", "qwen_shift", "highnoise", "balanced", "force_text"])
     ap.add_argument("--grad_checkpointing", action="store_true", default=True)
     ap.add_argument("--no_grad_checkpointing", dest="grad_checkpointing", action="store_false")
     ap.add_argument("--grad_checkpointing_offload", action="store_true")
@@ -329,6 +329,11 @@ def main():
                     help="# additional eval items sampled at --sample_steps_hi (high-quality preview)")
     ap.add_argument("--sample_steps_hi", type=int, default=50,
                     help="denoising steps for the --extra_eval samples")
+    ap.add_argument("--decoder_recon", action="store_true", default=True,
+                    help="at each eval, also log a single-step decoder-only recon PSNR/LPIPS")
+    ap.add_argument("--no_decoder_recon", dest="decoder_recon", action="store_false")
+    ap.add_argument("--decoder_recon_sigma", type=float, default=0.05,
+                    help="noise level (sigma) for the decoder-only recon probe")
     ap.add_argument("--eval_seed", type=int, default=0)
     ap.add_argument("--resize_base", type=int, default=0,
                     help="resize images to ~base*base AREA (AR preserved, /16). 0=native. 1024 keeps memory uniform across buckets")
@@ -425,12 +430,22 @@ def main():
         psnr, lp, pairs = _recon()
         hist["psnr"].append((step, psnr))
         ema_psnr = None
-        if ema: 
+        if ema:
             ema.swap_in()
             try:
                 ema_psnr, _, ema_pairs = _recon()
             finally:
                 ema.swap_out()
+        # decoder-only recon probe (single-step x0 = x_t - sigma*v); cheap, isolates the head
+        dpsnr = dlp = None
+        drecon_pairs = None
+        if args.decoder_recon:
+            dpsnr, dlp, drecon_pairs = sample_eval.decoder_recon_metrics(
+                gen_model, eval_items, device, sigma=args.decoder_recon_sigma, seed=args.eval_seed)
+            # parseable single line (the watchdog greps "decoder_recon@<step>: psnr <v>")
+            log(f"  decoder_recon@{step}: psnr {dpsnr:.2f}"
+                + (f" lpips {dlp:.4f}" if dlp is not None else "")
+                + f" sigma {args.decoder_recon_sigma:.3f}")
         if not use_wandb:
             log(f"  eval@{step}: recon_psnr {psnr:.2f}" + (f" (ema {ema_psnr:.2f})" if ema_psnr else ""))
             return
@@ -441,6 +456,14 @@ def main():
             d["eval/recon_lpips"] = lp
         if ema_psnr is not None:
             d["eval/recon_psnr_ema"] = ema_psnr
+        if dpsnr is not None:
+            d["eval/decoder_recon_psnr"] = dpsnr
+            if dlp is not None:
+                d["eval/decoder_recon_lpips"] = dlp
+            d["decoder_recon_samples"] = [
+                wandb.Image(np.concatenate([g, gt], axis=1),
+                            caption=f"{os.path.basename(fn)} (recon|gt) sigma{args.decoder_recon_sigma:.3f}")
+                for g, gt, fn in drecon_pairs]
         wandb.log(d, step=step)
         log(f"  eval@{step}: recon_psnr {psnr:.2f}" + (f" (ema {ema_psnr:.2f})" if ema_psnr else ""))
 

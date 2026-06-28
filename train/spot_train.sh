@@ -27,8 +27,9 @@ fi
 : "${SAMPLE_STEPS:=28}"                                  # denoising steps per eval image
 : "${EXTRA_EVAL:=1}"                                     # extra high-quality sample(s) at SAMPLE_STEPS_HI (5th image)
 : "${SAMPLE_STEPS_HI:=50}"                               # denoising steps for the EXTRA_EVAL sample(s)
+: "${DECODER_RECON_SIGMA:=0.05}"                         # sigma for the single-step decoder-only recon probe (runs every SAMPLE_EVERY)
 : "${LR_SCHEDULE:=constant}"                             # fixed LR; set cosine to revert to the decay schedule
-: "${TIMESTEP_SAMPLING:=lownoise}"                       # bias toward low sigma; set qwen_shift to revert
+: "${TIMESTEP_SAMPLING:=balanced}"                       # balanced low+high noise across full [0,1]; set qwen_shift to revert
 : "${RESIZE_BASE:=0}"                                    # resize imgs to ~NxN area (AR kept); 0=native, 1024=uniform mem
 : "${FIRST_BLOCKS:=6}"                                   # trainable leading DiT blocks (overfit-validated: 6)
 : "${LAST_BLOCKS:=6}"                                    # trainable trailing DiT blocks (overfit-validated: 6)
@@ -88,7 +89,7 @@ while :; do
       --fa3 \
       --grad_checkpointing --max_grad_norm 1.0 \
       --save_every 2000 --log_every 10 --sample_every "$SAMPLE_EVERY" --n_eval "$N_EVAL" --sample_steps "$SAMPLE_STEPS" \
-      --extra_eval "$EXTRA_EVAL" --sample_steps_hi "$SAMPLE_STEPS_HI" \
+      --extra_eval "$EXTRA_EVAL" --sample_steps_hi "$SAMPLE_STEPS_HI" --decoder_recon_sigma "$DECODER_RECON_SIGMA" \
       ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT" --wandb_name "${WANDB_NAME:-l2p-spot}"} \
       $EXTRA
   code=$?
