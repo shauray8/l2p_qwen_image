@@ -474,16 +474,21 @@ def main():
                 ema_psnr, _, ema_pairs = _recon()
             finally:
                 ema.swap_out()
-        # decoder-only recon probe (single-step x0 = x_t - sigma*v); cheap, isolates the head
+        # decoder-only recon probe (single-step x0 = x_t - sigma*v); cheap, isolates the head.
+        # best-effort: a failure here must NOT block the main eval samples below.
         dpsnr = dlp = None
         drecon_pairs = None
         if args.decoder_recon:
-            dpsnr, dlp, drecon_pairs = sample_eval.decoder_recon_metrics(
-                gen_model, eval_items, device, sigma=args.decoder_recon_sigma, seed=args.eval_seed)
-            # parseable single line (the watchdog greps "decoder_recon@<step>: psnr <v>")
-            log(f"  decoder_recon@{step}: psnr {dpsnr:.2f}"
-                + (f" lpips {dlp:.4f}" if dlp is not None else "")
-                + f" sigma {args.decoder_recon_sigma:.3f}")
+            try:
+                dpsnr, dlp, drecon_pairs = sample_eval.decoder_recon_metrics(
+                    gen_model, eval_items, device, sigma=args.decoder_recon_sigma, seed=args.eval_seed)
+                # parseable single line (the watchdog greps "decoder_recon@<step>: psnr <v>")
+                log(f"  decoder_recon@{step}: psnr {dpsnr:.2f}"
+                    + (f" lpips {dlp:.4f}" if dlp is not None else "")
+                    + f" sigma {args.decoder_recon_sigma:.3f}")
+            except Exception as e:
+                dpsnr = dlp = drecon_pairs = None
+                log(f"  WARN decoder_recon@{step} failed ({type(e).__name__}: {e}) — main samples still logged")
         if not use_wandb:
             log(f"  eval@{step}: recon_psnr {psnr:.2f}" + (f" (ema {ema_psnr:.2f})" if ema_psnr else ""))
             return

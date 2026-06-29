@@ -57,6 +57,11 @@ def decoder_recon(model, prompt_embeds, gt_np, device, sigma=0.05, seed=0,
     The decoder here predicts VELOCITY, not an image, so sigma=0 is degenerate
     (x0_hat == x_t == gt, PSNR=100). Use a small nonzero sigma; lower -> closer to
     a pure identity/decoder check. gt_np: HxWx3 uint8. Returns HxWx3 uint8.
+
+    Goes through the full model(...) forward (= forward_features + decode) rather than
+    calling those sub-methods directly: under FSDP2 the sharded-param all-gather is
+    driven by the root module's forward hook, which only fires on model(...). Calling
+    forward_features/decode directly leaves root params as sharded DTensors -> mismatch.
     """
     was_training = model.training
     model.eval()
@@ -67,8 +72,9 @@ def decoder_recon(model, prompt_embeds, gt_np, device, sigma=0.05, seed=0,
     x_t = (1 - s) * gt + s * noise
     emb = prompt_embeds.unsqueeze(0).to(device, dtype)
     pmask = prompt_embeds_mask.unsqueeze(0).to(device) if prompt_embeds_mask is not None else None
-    feat = model.forward_features(x_t, torch.full((1,), s, device=device), emb, pmask)
-    v = model.decode(x_t, feat).float()
+    v = model(noisy_image=x_t, timestep=torch.full((1,), s, device=device),
+              prompt_embeds=emb, prompt_embeds_mask=pmask,
+              use_gradient_checkpointing=False).float()
     x0 = x_t if s == 0 else x_t - s * v
     if was_training:
         model.train()
