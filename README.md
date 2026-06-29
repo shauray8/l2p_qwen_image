@@ -38,7 +38,7 @@ from here on It's just how fast and how much GPUs I get (btw I'm using verda), a
 oakay its been like 7-8 days since I started the run and for the most part I was'nt getting any GPUs on spot so I gave up and moved it to on-demand (4xH200) and while I was at it I fixed a bunch of issues atleast imo they were issues starting with : 
 <ol>
   <li>I had a measurment bug on PSNR, It was all bullshit</li>
-  <li>I though i was undersampling it eventhough I was using 28 steps, so i added a 50 step sample (I was certainly not oversampling)</li>
+  <li>I thought i was undersampling it even though I was using 28 steps, so i added a 50 step sample (I was certainly not undersampling)</li>
   <li>Added a decode recon test in order to measure the right PSNR</li>
   <li>Made it true to the paper, fixed LR, global BS 64 and a more balanced sigma selection (though shifted it towards a lower sigma for around 2-3k steps in order to balance it out)</li>
 </ol>
@@ -47,7 +47,7 @@ oakay its been like 7-8 days since I started the run and for the most part I was
 |:---:|:---:|:---:|:---:|
 | <img src="assets/train_losss.png" width="220"> | <img src="assets/recon_psnr.png" width="220"> | <img src="assets/train_lr.png" width="220"> | <img src="assets/train_sigma.png" width="220"> |
 
-sudden jumps are due to all the config changes I was doing through the run, tbh it was just undertrained i feel but ehh its better to remove all paths to failure, after all those changes here are results from step 11600 compared to 9600
+sudden jumps are due to all the config changes I was doing through the run, tbh it is just undertrained i feel but ehh its better to remove all paths to failure, after all those changes here are results from step 11600 compared to 9600
 
 | Sample 11600 A | Sample 11600 B | Sample 9600 A | Sample 9600 B |
 |:---:|:---:|:---:|:---:|
